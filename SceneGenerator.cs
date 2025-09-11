@@ -28,14 +28,16 @@ public class SceneGenerator : IIncrementalGenerator {
 		optionsProvider.GlobalOptions.TryGetValue("build_property.projectdir", out var projectDirectory);
 
 		var allMethods = new StringBuilder();
+		var allPaths = new StringBuilder();
 		foreach (var scene in scenes) {
 			var directory = Path.GetDirectoryName(scene.Path);
 			var name = Path.GetFileNameWithoutExtension(scene.Path);
 			var relativePath = scene.Path.Replace(projectDirectory ?? "", "").Replace("\\", "/");
+			allPaths.AppendLine($"	public const string Path{name.SnakeToCamelCase()} = \"res://{relativePath}\";");
 			allMethods.AppendLine(
 				$$"""
 				  	public static T New{{name.SnakeToCamelCase()}}<T>() where T : Node {
-				  		var packedScene = GD.Load<PackedScene>("res://{{relativePath}}");
+				  		var packedScene = GD.Load<PackedScene>(Path{{name.SnakeToCamelCase()}});
 				  		return packedScene.Instantiate<T>();
 				  	}
 				  """);
@@ -52,6 +54,8 @@ public class SceneGenerator : IIncrementalGenerator {
 
 			  class Scenes
 			  {
+			  {{allPaths}}
+			  
 			  {{allMethods}}
 			  }
 			  """;

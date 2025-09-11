@@ -66,6 +66,7 @@ public class ResourceGenerator : IIncrementalGenerator {
 
 	private static bool CheckResourcePath(
 		(AdditionalText file, ImmutableArray<(ClassDeclarationSyntax, string path)> Right) tuple) {
+		Console.WriteLine("AdditionalText: " + tuple.file.Path);
 		var realFilePath = tuple.file.Path;
 		var filePathToCheck = tuple.Right.Select(data => data.path);
 		var relativeFilePath = Path.GetDirectoryName(realFilePath)?.Replace("\\", "/");
@@ -88,6 +89,7 @@ public class ResourceGenerator : IIncrementalGenerator {
 			var path = "";
 			if (pathArgument?.Expression is LiteralExpressionSyntax literal) path = literal.Token.ValueText;
 
+			Console.WriteLine("Add to resources: " + path);
 			return (classDeclarationSyntax, true, path);
 		}
 
