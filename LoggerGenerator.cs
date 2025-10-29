@@ -116,7 +116,7 @@ namespace {namespaceName};
 
 partial class {classNameWithGenerics}
 {{
-    private static Logger log = new Logger(""{className}"");
+    private static SimpleLogger log = new SimpleLogger(""{className}"");
 }}
 ";
 			// Add the source code to the compilation.
