@@ -39,7 +39,7 @@ namespace {Namespace}
         public float DeltaInterval {{ get; set; }}
         public float ReplicationInterval {{ get; set; }}
         public bool PublicVisibility {{ get; set; }}
-        public MultiplayerSynchronizer.VisibilityUpdateMode VisibilityUpdateMode {{ get; set; }}
+        public MultiplayerSynchronizer.VisibilityUpdateModeEnum VisibilityUpdateMode {{ get; set; }}
     }}
 }}";
 
@@ -293,7 +293,10 @@ namespace {Namespace}
         }
 
         var usingCode = new StringBuilder();
-        foreach (var namespaceName in definition.UsingNamespaceName) usingCode.AppendLine($"using {namespaceName};");
+        foreach (var namespaceName in definition.UsingNamespaceName) {
+            if(namespaceName == "Godot") continue;
+            usingCode.AppendLine($"using {namespaceName};");
+        }
 
         // Build up the source code
         var code = $$"""

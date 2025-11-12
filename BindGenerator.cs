@@ -1,5 +1,4 @@
 ﻿using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -148,7 +147,7 @@ public class BindGenerator : IIncrementalGenerator {
 						var scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
 						var typeSymbol = allTypes[scriptClassName].FirstOrDefault();
 						if (typeSymbol != null) {
-							nodeType = typeSymbol.ToDisplayString(); // Override with script's class
+							nodeType = typeSymbol.ToDisplayString(); // Override with a script class
 							if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
 								classDefinition.UsingNamespaceName.Add(
 									typeSymbol.ContainingNamespace.ToDisplayString());
@@ -162,7 +161,7 @@ public class BindGenerator : IIncrementalGenerator {
 			var memberName = $"_{char.ToLowerInvariant(nodeName[0])}{nodeName.Substring(1)}";
 			classDefinition.MemberDefinitions.Add(new MemberDefinition {
 				Name = memberName,
-				Type = nodeType,
+				Type = nodeType!,
 				NodeName = nodeName,
 			});
 		}
