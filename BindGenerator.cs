@@ -16,7 +16,9 @@ public class BindGenerator : IIncrementalGenerator {
 			.CreateSyntaxProvider(
 				(s, _) => s is ClassDeclarationSyntax,
 				(ctx, _) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node) as INamedTypeSymbol)
-			.Where(symbol => symbol is not null);
+			.Where(symbol => symbol is not null)
+			.Collect()
+			.SelectMany((symbols, _) => symbols.Distinct(SymbolEqualityComparer.Default).Cast<INamedTypeSymbol>());
 
 		var sceneFilesProvider = context.AdditionalTextsProvider
 			.Where(file => file.Path.EndsWith(".tscn", System.StringComparison.OrdinalIgnoreCase));
