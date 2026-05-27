@@ -1,7 +1,9 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 
@@ -27,7 +29,7 @@ public class ActionGenerator : IIncrementalGenerator {
 			if (text == null) continue;
 			var content = text.ToString();
 			var inputs = GetActions(content);
-			var fields = inputs.Select(keyData => "\tpublic static StringName " + keyData + " = \"" + keyData + "\";");
+			var fields = inputs.Select(CreateActionEntry);
 
 			foreach (var field in fields) memberCode.AppendLine(field);
 		}
@@ -47,6 +49,12 @@ public class ActionGenerator : IIncrementalGenerator {
 
 		             """;
 		context.AddSource($"{Namespace}.{ClassName}.g.cs", SourceText.From(code, Encoding.UTF8));
+	}
+
+	private static string CreateActionEntry(string action) {
+		var actionKey = action.Replace("\"", "");
+		var actionField = Regex.Replace(action, "[^a-zA-Z0-9]+", "");;
+		return $"\tpublic static StringName {actionField} = \"{actionKey}\"; ";
 	}
 
 	private static List<string> GetActions(string content) {
