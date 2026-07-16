@@ -6,6 +6,11 @@
         <Nullable>enable</Nullable>
         <LangVersion>latest</LangVersion>
 
+        <!-- This project is consumed via relative ProjectReference from other repos (e.g. CROSS.Godot).
+             When referenced from inside a repo that turns on central package management, it must not
+             inherit that repo's Directory.Packages.props; it manages its own package versions inline. -->
+        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+
         <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
         <IsRoslynComponent>true</IsRoslynComponent>
 
