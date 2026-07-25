@@ -1,4 +1,6 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -34,10 +36,10 @@ public class BindGenerator : IIncrementalGenerator {
 			var sceneFiles = classAndScenes.Right;
 
 			var sceneFile = sceneFiles.FirstOrDefault(f =>
-				Path.GetFileNameWithoutExtension(f.Path) == classSymbol!.Name);
+				string.Equals(Path.GetFileNameWithoutExtension(f.Path), classSymbol!.Name, StringComparison.CurrentCultureIgnoreCase));
 
 			if (sceneFile is not null) {
-				GenerateCode(spc, compilation, classSymbol!, sceneFile);
+				GenerateCode(spc, compilation, classSymbol!, sceneFile, sceneFiles);
 			}
 		});
 	}
@@ -66,7 +68,7 @@ public class BindGenerator : IIncrementalGenerator {
 	}
 
 	private void GenerateCode(SourceProductionContext context, Compilation compilation, INamedTypeSymbol classSymbol,
-		AdditionalText sceneFile) {
+		AdditionalText sceneFile, ImmutableArray<AdditionalText> sceneFiles) {
 		var sceneContent = sceneFile.GetText(context.CancellationToken)?.ToString();
 		if (sceneContent == null || string.IsNullOrEmpty(sceneContent)) return;
 
@@ -132,6 +134,10 @@ public class BindGenerator : IIncrementalGenerator {
 						if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
 							classDefinition.UsingNamespaceName.Add(
 								typeSymbol.ContainingNamespace.ToDisplayString());
+					} else {
+						// No C# class backs the instanced scene — fall back to the Godot
+						// type of that scene's root (owner) node, e.g. "Control".
+						nodeType = ResolveInstancedSceneRootType(context, sceneFiles, scenePath);
 					}
 				}
 			} else // It's a regular node
@@ -170,6 +176,24 @@ public class BindGenerator : IIncrementalGenerator {
 
 
 		if (classDefinition.MemberDefinitions.Count > 0) GenerateClass(context, classDefinition);
+	}
+
+	private static string? ResolveInstancedSceneRootType(SourceProductionContext context,
+		ImmutableArray<AdditionalText> sceneFiles, string scenePath) {
+		var normalized = scenePath.Replace('\\', '/');
+		var target = sceneFiles.FirstOrDefault(f =>
+			f.Path.Replace('\\', '/').EndsWith(normalized, StringComparison.OrdinalIgnoreCase));
+		var content = target?.GetText(context.CancellationToken)?.ToString();
+		if (string.IsNullOrEmpty(content)) return null;
+
+		// The root (owner) node is the first [node ...] block; child nodes carry a parent= attribute.
+		foreach (var line in content.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {
+			if (!line.StartsWith("[node ")) continue;
+			var typeMatch = Regex.Match(line, @"type\s*=\s*""([^""]+)""");
+			return typeMatch.Success ? typeMatch.Groups[1].Value : null;
+		}
+
+		return null;
 	}
 
 	private static void GenerateClass(SourceProductionContext context, ClassDefinition definition) {
