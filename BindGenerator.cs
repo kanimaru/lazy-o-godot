@@ -135,9 +135,11 @@ public class BindGenerator : IIncrementalGenerator {
 							classDefinition.UsingNamespaceName.Add(
 								typeSymbol.ContainingNamespace.ToDisplayString());
 					} else {
-						// No C# class backs the instanced scene — fall back to the Godot
-						// type of that scene's root (owner) node, e.g. "Control".
-						nodeType = ResolveInstancedSceneRootType(context, sceneFiles, scenePath);
+						// No C# class backs the instanced scene by its file name — inspect
+						// that scene's root (owner) node: prefer the C# class attached via its
+						// script, otherwise fall back to the Godot type, e.g. "Control".
+						nodeType = ResolveInstancedSceneRootType(context, sceneFiles, scenePath,
+							allTypes, classDefinition);
 					}
 				}
 			} else // It's a regular node
@@ -179,21 +181,62 @@ public class BindGenerator : IIncrementalGenerator {
 	}
 
 	private static string? ResolveInstancedSceneRootType(SourceProductionContext context,
-		ImmutableArray<AdditionalText> sceneFiles, string scenePath) {
+		ImmutableArray<AdditionalText> sceneFiles, string scenePath,
+		ILookup<string, INamedTypeSymbol> allTypes, ClassDefinition classDefinition) {
 		var normalized = scenePath.Replace('\\', '/');
 		var target = sceneFiles.FirstOrDefault(f =>
 			f.Path.Replace('\\', '/').EndsWith(normalized, StringComparison.OrdinalIgnoreCase));
 		var content = target?.GetText(context.CancellationToken)?.ToString();
 		if (string.IsNullOrEmpty(content)) return null;
 
-		// The root (owner) node is the first [node ...] block; child nodes carry a parent= attribute.
-		foreach (var line in content.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {
-			if (!line.StartsWith("[node ")) continue;
-			var typeMatch = Regex.Match(line, @"type\s*=\s*""([^""]+)""");
-			return typeMatch.Success ? typeMatch.Groups[1].Value : null;
+		// Collect the script ext_resources declared by the instanced scene so we can
+		// map a script id referenced by the root node back to its C# class.
+		var scriptResources = new Dictionary<string, string>();
+		var extResourceRegex =
+			new Regex(
+				"""^\[ext_resource type="([^"]+)"(?: uid="[^"]+")? path="res:\/\/([^"]+)" id="([^"]+)"\]""",
+				RegexOptions.Multiline);
+		foreach (Match match in extResourceRegex.Matches(content!)) {
+			if (match.Groups[1].Value == "Script" && match.Groups[2].Value.EndsWith(".cs"))
+				scriptResources[match.Groups[3].Value] = match.Groups[2].Value;
 		}
 
-		return null;
+		// The root (owner) node is the first [node ...] block; child nodes carry a parent= attribute.
+		// Capture the whole block because the script assignment lives on a line after the header.
+		var rootBlock = new StringBuilder();
+		var inRoot = false;
+		foreach (var line in content!.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {
+			if (line.StartsWith("[")) {
+				if (line.StartsWith("[node ")) {
+					if (inRoot) break; // Reached the next node — the root block is complete.
+					inRoot = true;
+				} else if (inRoot) {
+					break; // A different section after the root node ends the block.
+				}
+			}
+
+			if (inRoot) rootBlock.AppendLine(line);
+		}
+
+		var block = rootBlock.ToString();
+		if (block.Length == 0) return null;
+
+		// Prefer the C# class attached to the root node via its script.
+		var scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
+		if (scriptMatch.Success &&
+		    scriptResources.TryGetValue(scriptMatch.Groups[1].Value, out var scriptPath)) {
+			var scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
+			var typeSymbol = allTypes[scriptClassName].FirstOrDefault();
+			if (typeSymbol != null) {
+				if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
+					classDefinition.UsingNamespaceName.Add(typeSymbol.ContainingNamespace.ToDisplayString());
+				return typeSymbol.ToDisplayString();
+			}
+		}
+
+		// Otherwise fall back to the Godot type of the root node, e.g. "Control".
+		var typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
+		return typeMatch.Success ? typeMatch.Groups[1].Value : null;
 	}
 
 	private static void GenerateClass(SourceProductionContext context, ClassDefinition definition) {
