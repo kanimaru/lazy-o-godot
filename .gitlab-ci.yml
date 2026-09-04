@@ -53,11 +53,12 @@ variables:
   # THIS project's own registry, so pushing needs no PAT or deploy token — only
   # consumers restoring the package need one.
   NUGET_REGISTRY: $CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/nuget/index.json
-  # The Godot binding assembly the smoke consumer compiles the generated code
-  # against. Keep this in step with the Godot.NET.Sdk version real consumers
-  # use — the generators emit code referencing Godot types directly, so a
-  # binding break shows up here as a compile error and nowhere else.
-  GODOT_SHARP_VERSION: "4.7.2"
+  # The Godot.NET.Sdk the smoke consumer builds with — the same SDK a real
+  # Godot game project uses, so the generated code is compiled in exactly the
+  # environment it ships into. The generators emit code referencing Godot types
+  # directly, so a binding break shows up here as a compile error and nowhere
+  # else. Keep this in step with what real consumers are on.
+  GODOT_SDK_VERSION: "4.7.2"
 
 .dotnet:
   image: mcr.microsoft.com/dotnet/sdk:10.0-noble
@@ -120,12 +121,15 @@ build:warnings:
 #
 # Two things this consumer needs that are easy to get wrong:
 #
-#   GodotSharp. Every generator here emits code with `using Godot;` in it —
-#   Sync emits SceneReplicationConfig.ReplicationMode, Scenes emits
-#   GD.Load<PackedScene>, Actions and Groups emit StringName. Without the Godot
+#   The Godot types. Every generator here emits code with `using Godot;` in it
+#   — Sync emits SceneReplicationConfig.ReplicationMode, Scenes emits
+#   GD.Load<PackedScene>, Actions and Groups emit StringName. Without those
 #   types in scope the smoke build fails with a wall of CS0246 even though the
-#   generators ran perfectly. GodotSharp is the binding assembly Godot.NET.Sdk
-#   would otherwise supply, minus the export tooling, and it is on nuget.org.
+#   generators ran perfectly. Building on Godot.NET.Sdk supplies them, and
+#   matches how consumers actually build. (The bare GodotSharp package is
+#   enough to compile, but the full SDK also exercises the generated code
+#   alongside Godot's own source generators, which is closer to the real
+#   thing — and is why the output paths below need pinning.)
 #
 #   AdditionalFiles. Five of the generators are driven entirely by Godot files
 #   rather than by C# syntax: Actions and Groups parse the [input] and
@@ -150,7 +154,7 @@ package:smoke:
     - cd "$CI_PROJECT_DIR/smoke"
 
     # <clear/> then two explicit sources: the local pack output wins for our own
-    # package, nuget.org supplies GodotSharp. Without the clear, a runner with
+    # package, nuget.org supplies Godot.NET.Sdk. Without the clear, a runner with
     # an inherited machine-level config could resolve PKG_ID from somewhere else
     # entirely and smoke-test a stale already-published package.
     - |
@@ -168,14 +172,24 @@ package:smoke:
     # EmitCompilerGeneratedFiles is what puts the generated sources on disk, so
     # a failure here leaves the actual generator output in the job artifacts to
     # look at instead of just a compiler error.
+    #
+    # CompilerGeneratedFilesOutputPath is pinned rather than left to default,
+    # because Godot.NET.Sdk redirects the intermediate output into
+    # .godot/mono/temp/obj/ AND drops the target-framework segment. The default
+    # location therefore differs between SDKs:
+    #   Microsoft.NET.Sdk  obj/Release/net10.0/generated/...
+    #   Godot.NET.Sdk      .godot/mono/temp/obj/Release/generated/...
+    # Anything downstream that hardcodes one is wrong under the other, so name
+    # the directory explicitly and let both SDKs agree on it.
     - |
       cat > smoke.csproj <<EOF
-      <Project Sdk="Godot.NET.Sdk/$GODOT_SHARP_VERSION">
+      <Project Sdk="Godot.NET.Sdk/$GODOT_SDK_VERSION">
         <PropertyGroup>
           <TargetFramework>net10.0</TargetFramework>
           <Nullable>enable</Nullable>
           <WarningsAsErrors>CS8032;CS8034</WarningsAsErrors>
           <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+          <CompilerGeneratedFilesOutputPath>\$(MSBuildProjectDirectory)/generated</CompilerGeneratedFilesOutputPath>
         </PropertyGroup>
         <ItemGroup>
           <PackageReference Include="$PKG_ID" Version="$PKG_VERSION" />
@@ -271,21 +285,21 @@ package:smoke:
     # unconditionally by AutowireGenerator (it needs no annotated types and no
     # AdditionalFiles), so its absence means nothing ran.
     - |
-      MARKER="obj/Release/net10.0/generated/Generators/GenUtilities.AutowireGenerator/AutowireAttribute.g.cs"
+      MARKER="generated/Generators/GenUtilities.AutowireGenerator/AutowireAttribute.g.cs"
       if [ ! -f "$MARKER" ]; then
         echo "FAIL: no generated sources — the generators loaded but produced nothing,"
         echo "      or did not load at all. Expected $MARKER"
-        find obj -name '*.g.cs' -print || true
+        find . -name '*.g.cs' -not -path './.nuget/*' -print || true
         exit 1
       fi
       echo "generated sources:"
-      find obj -name '*.g.cs' | sed 's|.*/generated/Generators/|  |'
+      find generated -name '*.g.cs' | sed 's|^generated/Generators/|  |'
   artifacts:
     when: always
     expire_in: 1 week
     paths:
       - pkg/
-      - smoke/obj/Release/net10.0/generated/
+      - smoke/generated/
 
 # ---------------------------------------------------------------------------
 # auto-tag — reserve the next release version for this commit, in-pipeline
