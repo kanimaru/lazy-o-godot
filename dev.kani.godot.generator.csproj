@@ -2,7 +2,6 @@
 
     <PropertyGroup>
         <TargetFramework>netstandard2.1</TargetFramework>
-        <IsPackable>false</IsPackable>
         <Nullable>enable</Nullable>
         <LangVersion>latest</LangVersion>
 
@@ -15,16 +14,65 @@
         <IsRoslynComponent>true</IsRoslynComponent>
 
         <RootNamespace>GenUtilities</RootNamespace>
-        <PackageId>Generators</PackageId>
+        <PackageId>Dev.Kani.Godot.Generator</PackageId>
         <AssemblyName>Generators</AssemblyName>
     </PropertyGroup>
 
+    <!-- ===================================================================
+         NuGet packaging — a Roslyn analyzer package, not a library package
+         ===================================================================
+         A source generator ships as an *analyzer asset*: the consumer's
+         compiler loads the DLL from analyzers/dotnet/cs, and nothing is ever
+         referenced at runtime. Hence:
+
+           IncludeBuildOutput=false      keep Generators.dll out of lib/, which
+                                         is what would make it a normal runtime
+                                         reference (and, for netstandard2.1,
+                                         drag a bogus target framework into
+                                         every consumer).
+           SuppressDependenciesWhenPacking  analyzers get no dependency
+                                         resolution — a <dependency> in the
+                                         nuspec would be silently ignored at
+                                         analyzer load time and just confuse
+                                         consumers. The Microsoft.CodeAnalysis.*
+                                         references below are compile-time only
+                                         (the host compiler supplies them at
+                                         run time), so there is nothing real to
+                                         declare.
+
+         The <None Pack="true"> item is what actually puts the DLL in the
+         package. `dotnet pack` builds before packing, so $(OutputPath) is
+         populated by the time this is evaluated.
+    -->
+    <PropertyGroup>
+        <IsPackable>true</IsPackable>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+
+        <!-- Local/dev fallback only. CI always overrides this with -p:Version=
+             from the release tag, so this number is not the source of truth. -->
+        <Version>0.1.0</Version>
+
+        <Authors>kanimaru</Authors>
+        <Description>Roslyn source generators for Godot C# projects: autowiring nodes, scene and resource paths, signals, groups, singletons, logging and sync helpers.</Description>
+        <PackageTags>godot;source-generator;roslyn;analyzer;codegen</PackageTags>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/kanimaru/lazy-o-godot</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+    </PropertyGroup>
+
     <ItemGroup>
+        <None Include="$(OutputPath)$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- PrivateAssets=all on all of these: the compiler host provides the
+             Roslyn assemblies at analyzer load time. Shipping or declaring them
+             would at best be dead weight and at worst load the wrong version. -->
         <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.4">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.3.0"/>
-        <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.3.0"/>
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.3.0" PrivateAssets="all"/>
     </ItemGroup>
 </Project>

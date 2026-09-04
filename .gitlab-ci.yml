@@ -1,0 +1,320 @@
+# lazy-o-godot CI — Roslyn source generators for Godot, shipped as a NuGet package
+#
+#   test     every pipeline        build it, then pack it and make a throwaway
+#                                   consumer project actually load the generators
+#   tag      main, if test passed  reserve the next release version and tag this
+#                                   commit with it (pushed with `-o ci.skip`, so
+#                                   this does NOT spawn a second pipeline)
+#   publish  main / tag            push the .nupkg to the project NuGet feed
+#
+# One pipeline, one linear pass, one release per green commit on the default
+# branch. A human can still cut a specific major/minor by pushing a `vX.Y.Z` tag
+# directly (auto-tag then bumps the patch from *that* tag next time) — that tag
+# runs its own ordinary pipeline through publish, same as always.
+#
+# No Docker anywhere: this repo produces exactly one artifact, a .nupkg, and
+# packing/pushing that is a plain `dotnet` operation. Everything runs in the SDK
+# image.
+#
+# Deliberately NOT ported from the vbeami pipeline this is modelled on: a
+# `sync-version-markers` job. There, a version number was baked into a
+# load-bearing dotquay.toml that consumers resolve against. Here the only
+# in-tree version is the csproj's <Version>, which CI overrides on every pack
+# (-p:Version=) and which therefore only ever affects a developer's local
+# `dotnet pack`. Committing a marker bump back per release would be a commit of
+# pure noise. If an in-tree manifest ever does become load-bearing, copy that
+# job over verbatim — auto-tag already provides the token and $RELEASE_VERSION
+# it needs.
+
+stages:
+  - test
+  - tag
+  - publish
+
+# Avoid the duplicate-pipeline problem: one pipeline per MR, one per push to a
+# branch with no open MR, plus tags. auto-tag's own tag push below is separately
+# suppressed with `-o ci.skip`, so it never reaches this evaluation at all —
+# this workflow is what still lets a *human* pushing a `vX.Y.Z` tag by hand get
+# a normal tag pipeline.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+variables:
+  GIT_DEPTH: "20"
+  GIT_SUBMODULE_STRATEGY: none
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  # Project-scoped NuGet v3 feed. CI_JOB_TOKEN is accepted as the API key for
+  # THIS project's own registry, so pushing needs no PAT or deploy token — only
+  # consumers restoring the package need one.
+  NUGET_REGISTRY: $CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/nuget/index.json
+  # The Godot binding assembly the smoke consumer compiles the generated code
+  # against. Keep this in step with the Godot.NET.Sdk version real consumers
+  # use — the generators emit code referencing Godot types directly, so a
+  # binding break shows up here as a compile error and nowhere else.
+  GODOT_SHARP_VERSION: "4.7.2"
+
+.dotnet:
+  image: mcr.microsoft.com/dotnet/sdk:10.0-noble
+  variables:
+    # Keep the package cache inside the project so GitLab can cache it.
+    NUGET_PACKAGES: $CI_PROJECT_DIR/.nuget
+  cache:
+    key:
+      files:
+        - dev.kani.godot.generator.csproj
+    paths:
+      - .nuget/
+
+# ---------------------------------------------------------------------------
+# build — does the generator itself compile
+# ---------------------------------------------------------------------------
+build:
+  extends: .dotnet
+  stage: test
+  script:
+    - dotnet build dev.kani.godot.generator.csproj -c Release
+
+# Warnings are not build errors in the csproj, so surface them here rather than
+# letting them accumulate unseen. Non-blocking on purpose.
+build:warnings:
+  extends: .dotnet
+  stage: test
+  allow_failure: true
+  script:
+    - dotnet build dev.kani.godot.generator.csproj -c Release -warnaserror
+
+# ---------------------------------------------------------------------------
+# package:smoke — pack it, then make a real consumer prove the generators run
+# ---------------------------------------------------------------------------
+# A source generator package fails *silently*. If the DLL lands anywhere but
+# analyzers/dotnet/cs, or the package declares dependencies (analyzers get no
+# dependency resolution), or it is built against a Roslyn newer than the
+# consumer's compiler, then `dotnet restore` succeeds, `dotnet build` succeeds,
+# and simply no code is generated. Nothing fails until a human notices their
+# `[Autowire]` fields are gone. `dotnet pack` on its own catches none of that.
+#
+# So this job packs the package and then consumes it the way a real project
+# does — PackageReference, from a local feed, against GodotSharp — and asserts
+# the generated sources actually appeared on disk. Three distinct checks, each
+# catching a different silent failure:
+#
+#   1. analyzers/dotnet/cs/Generators.dll exists in the *restored* package.
+#      Checks the packed layout without needing unzip in the image.
+#   2. no lib/ in the restored package. A lib/ entry means IncludeBuildOutput
+#      slipped back on, which turns this into a runtime reference and drags a
+#      netstandard2.1 target into every consumer.
+#   3. the consumer build emits the generated sources, with CS8032 promoted to
+#      an error. CS8032 ("an instance of analyzer cannot be created") is the
+#      compiler's *warning* for a generator that failed to load — the exact
+#      failure that otherwise ships green.
+package:smoke:
+  extends: .dotnet
+  stage: test
+  needs: []
+  variables:
+    PKG_ID: Dev.Kani.Godot.Generator
+    # Lowercased id — the extracted package directory under NUGET_PACKAGES is
+    # always lowercase, and on a case-sensitive filesystem that matters.
+    PKG_DIR_ID: dev.kani.godot.generator
+  script:
+    - PKG_VERSION="0.0.0-ci-$CI_COMMIT_SHORT_SHA"
+    - dotnet pack dev.kani.godot.generator.csproj -c Release -p:Version="$PKG_VERSION" -o "$CI_PROJECT_DIR/pkg"
+
+    - mkdir -p "$CI_PROJECT_DIR/smoke"
+    - cd "$CI_PROJECT_DIR/smoke"
+
+    # <clear/> then two explicit sources: the local pack output wins for our own
+    # package, nuget.org supplies GodotSharp. Without the clear, a runner with
+    # an inherited machine-level config could resolve PKG_ID from somewhere else
+    # entirely and smoke-test a stale already-published package.
+    - |
+      cat > nuget.config <<EOF
+      <?xml version="1.0" encoding="utf-8"?>
+      <configuration>
+        <packageSources>
+          <clear />
+          <add key="local" value="$CI_PROJECT_DIR/pkg" />
+          <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+        </packageSources>
+      </configuration>
+      EOF
+
+    # net8.0 to match what real Godot 4.x consumers target.
+    # EmitCompilerGeneratedFiles is what puts the generated sources on disk for
+    # check 3 below.
+    - |
+      cat > smoke.csproj <<EOF
+      <Project Sdk="Microsoft.NET.Sdk">
+        <PropertyGroup>
+          <TargetFramework>net10.0</TargetFramework>
+          <Nullable>enable</Nullable>
+          <WarningsAsErrors>CS8032;CS8034</WarningsAsErrors>
+          <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+        </PropertyGroup>
+        <ItemGroup>
+          <PackageReference Include="GodotSharp" Version="$GODOT_SHARP_VERSION" />
+          <PackageReference Include="$PKG_ID" Version="$PKG_VERSION" />
+        </ItemGroup>
+      </Project>
+      EOF
+
+    - echo 'internal static class Smoke { internal static void Main() { } }' > Smoke.cs
+
+    - dotnet restore
+
+    # 1 + 2: the restored package layout.
+    - |
+      RESTORED="$NUGET_PACKAGES/$PKG_DIR_ID/$PKG_VERSION"
+      if [ ! -f "$RESTORED/analyzers/dotnet/cs/Generators.dll" ]; then
+        echo "FAIL: Generators.dll is not at analyzers/dotnet/cs/ in the package."
+        echo "      The consumer's compiler will never load it. Package contents:"
+        find "$RESTORED" -type f | sed "s|$RESTORED/|  |"
+        exit 1
+      fi
+      if [ -d "$RESTORED/lib" ]; then
+        echo "FAIL: the package has a lib/ directory — IncludeBuildOutput is back on."
+        echo "      That ships the generator as a runtime reference, not an analyzer."
+        exit 1
+      fi
+
+    - dotnet build -c Release
+
+    # 3: the generators actually ran. AutowireAttribute is emitted
+    # unconditionally by AutowireGenerator (it needs no annotated types to
+    # exist), so its absence means the generator did not run at all.
+    - |
+      MARKER="obj/Release/net10.0/generated/Generators/GenUtilities.AutowireGenerator/AutowireAttribute.g.cs"
+      if [ ! -f "$MARKER" ]; then
+        echo "FAIL: no generated sources — the generators loaded but produced nothing,"
+        echo "      or did not load at all. Expected $MARKER"
+        find obj -name '*.g.cs' -print || true
+        exit 1
+      fi
+      echo "generated sources:"
+      find obj -name '*.g.cs' | sed 's|.*/generated/Generators/|  |'
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - pkg/
+      - smoke/obj/Release/net10.0/generated/
+
+# ---------------------------------------------------------------------------
+# auto-tag — reserve the next release version for this commit, in-pipeline
+# ---------------------------------------------------------------------------
+# Runs only on an ordinary push to $CI_DEFAULT_BRANCH (not MR pipelines, not tag
+# pipelines — $CI_COMMIT_BRANCH is unset for both), and only after the `test`
+# stage passed: a tag created here cascades directly into a real, immutable
+# NuGet release later in this same pipeline, and a published package version
+# cannot be quietly un-shipped. (build:warnings is allow_failure and does not
+# gate this; build and package:smoke do.)
+#
+# Finds the highest existing `vX.Y.Z` tag via git's own semver-aware
+# `--sort=-v:refname` (not `git describe`, which needs the tag to be a commit
+# ancestor — irrelevant here, we always tag the branch tip) and bumps the patch
+# digit. Patch-only, deliberately dumb: to cut a specific major/minor instead,
+# tag it yourself before pushing — a manual tag becomes the new baseline.
+#
+# `git fetch origin --tags` is explicit rather than relying on the runner's
+# clone behavior, because GIT_DEPTH bounds commit history, not which tags get
+# fetched, and this must see every release tag that exists.
+#
+# `-o ci.skip` on the tag push is the load-bearing bit: without it, pushing a
+# tag spawns a *second*, independent pipeline for the same commit (GitLab treats
+# tag and branch pipelines as unrelated), racing a second release attempt
+# against this one. The reserved version reaches the rest of *this* pipeline via
+# a dotenv artifact (RELEASE_VERSION); publish declares
+# `needs: [{job: auto-tag, optional: true}]` — optional because auto-tag does
+# not run at all in MR or manual-tag pipelines.
+#
+# Needs a $VERSION_BUMP_TOKEN CI/CD variable (protected + masked): a Project
+# Access Token, Settings → Access Tokens, scope write_repository, role Developer
+# or higher. $CI_JOB_TOKEN can push to this project's package registry but not
+# commits or tags. If the default branch is protected, that token's role also
+# needs "allowed to push" on it (and protected tags a matching allowance for
+# `v*`), or this job fails at the push step.
+auto-tag:
+  stage: tag
+  image:
+    name: alpine/git:latest
+    # alpine/git's ENTRYPOINT is `git`, not a shell, so the runner's default
+    # `sh -c "<script>"` becomes `git sh -c "<script>"` — hence
+    # "git: 'sh' is not a git command." Blank it so the runner's shell runs.
+    entrypoint: [""]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - |
+      git fetch origin --tags --quiet
+
+      LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+      if [ -z "$LATEST_TAG" ]; then LATEST_TAG="v0.0.0"; fi
+
+      BASE="${LATEST_TAG#v}"
+      MAJOR="${BASE%%.*}"
+      REST="${BASE#*.}"
+      MINOR="${REST%%.*}"
+      PATCH="${REST#*.}"
+      NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
+      NEW_TAG="v$NEXT"
+      echo "latest release: $LATEST_TAG -> tagging $CI_COMMIT_SHORT_SHA as $NEW_TAG"
+
+      echo "RELEASE_VERSION=$NEXT" >> release.env
+
+      git tag "$NEW_TAG" "$CI_COMMIT_SHA"
+      git push -o ci.skip "https://lazy-o-ci:${VERSION_BUMP_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "refs/tags/$NEW_TAG"
+  artifacts:
+    reports:
+      dotenv: release.env
+
+# ---------------------------------------------------------------------------
+# publish:nuget — the actual release
+# ---------------------------------------------------------------------------
+# Version is a two-way fallback: a human's `$CI_COMMIT_TAG` when this ran
+# because of a manual tag, else auto-tag's `$RELEASE_VERSION` reserved for this
+# pipeline. Computed in the script, not in `variables:`, because GitLab's
+# variable expansion does plain $NAME substitution only; the shell
+# parameter-expansion fallback needs a real shell.
+#
+# This repacks rather than reusing package:smoke's artifact, because that one is
+# deliberately versioned `0.0.0-ci-<sha>` and a .nupkg's version is baked into
+# its filename and its nuspec — it cannot be retagged the way a Docker image
+# can. Same commit, same inputs, same deterministic pack.
+publish:nuget:
+  extends: .dotnet
+  stage: publish
+  needs:
+    - job: auto-tag
+      optional: true
+    - job: build
+    - job: package:smoke
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - |
+      PKG_VERSION="${CI_COMMIT_TAG#v}"
+      PKG_VERSION="${PKG_VERSION:-$RELEASE_VERSION}"
+      if [ -z "$PKG_VERSION" ]; then
+        echo "FAIL: no version to publish — neither a vX.Y.Z tag nor auto-tag's RELEASE_VERSION."
+        exit 1
+      fi
+      echo "packing Dev.Kani.Godot.Generator $PKG_VERSION"
+      dotnet pack dev.kani.godot.generator.csproj -c Release -p:Version="$PKG_VERSION" -o pkg
+    # NOT --skip-duplicate: re-pushing an already-published version silently
+    # would hide a real mistake (a retagged release, two concurrent pipelines
+    # reserving the same patch). This must fail loudly instead, on purpose.
+    - dotnet nuget push "pkg/*.nupkg" --source "$NUGET_REGISTRY" --api-key "$CI_JOB_TOKEN"
+  artifacts:
+    expire_in: 1 year
+    paths:
+      - pkg/
+  environment:
+    name: registry
+    url: $CI_SERVER_URL/$CI_PROJECT_PATH/-/packages

@@ -369,3 +369,9 @@ test:.cs
 /android/
 /assets/panda
 /assets/tempti
+
+# CI working directories (.gitlab-ci.yml): local NuGet cache, pack output and
+# the throwaway consumer project package:smoke builds.
+.nuget/
+pkg/
+smoke/
