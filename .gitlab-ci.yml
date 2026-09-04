@@ -100,19 +100,39 @@ build:warnings:
 # `[Autowire]` fields are gone. `dotnet pack` on its own catches none of that.
 #
 # So this job packs the package and then consumes it the way a real project
-# does — PackageReference, from a local feed, against GodotSharp — and asserts
-# the generated sources actually appeared on disk. Three distinct checks, each
-# catching a different silent failure:
+# does — PackageReference, from a local feed, against real Godot fixture files
+# — and asserts the generators actually produced usable members. Four distinct
+# checks, each catching a different silent failure:
 #
 #   1. analyzers/dotnet/cs/Generators.dll exists in the *restored* package.
 #      Checks the packed layout without needing unzip in the image.
 #   2. no lib/ in the restored package. A lib/ entry means IncludeBuildOutput
 #      slipped back on, which turns this into a runtime reference and drags a
 #      netstandard2.1 target into every consumer.
-#   3. the consumer build emits the generated sources, with CS8032 promoted to
-#      an error. CS8032 ("an instance of analyzer cannot be created") is the
-#      compiler's *warning* for a generator that failed to load — the exact
-#      failure that otherwise ships green.
+#   3. the consumer compiles, with CS8032 promoted to an error. CS8032 ("an
+#      instance of analyzer cannot be created") is the compiler's *warning* for
+#      a generator that failed to load — the exact failure that ships green.
+#   4. Smoke.cs *uses* generated members (Actions.moveforward, Groups.enemies,
+#      Scenes.PathPlayerShip). This is the real assertion, and it is enforced by
+#      the compiler rather than by grepping output: if any of those generators
+#      stops emitting, the build dies with CS0117 instead of quietly producing
+#      an empty class.
+#
+# Two things this consumer needs that are easy to get wrong:
+#
+#   GodotSharp. Every generator here emits code with `using Godot;` in it —
+#   Sync emits SceneReplicationConfig.ReplicationMode, Scenes emits
+#   GD.Load<PackedScene>, Actions and Groups emit StringName. Without the Godot
+#   types in scope the smoke build fails with a wall of CS0246 even though the
+#   generators ran perfectly. GodotSharp is the binding assembly Godot.NET.Sdk
+#   would otherwise supply, minus the export tooling, and it is on nuget.org.
+#
+#   AdditionalFiles. Five of the generators are driven entirely by Godot files
+#   rather than by C# syntax: Actions and Groups parse the [input] and
+#   [global_group] sections of project.godot, Scenes globs *.tscn, Resource
+#   globs *.tres. With no AdditionalFiles they all still run and still compile —
+#   they just emit an empty class. That is a passing build that proves nothing,
+#   which is why the fixtures below exist.
 package:smoke:
   extends: .dotnet
   stage: test
@@ -145,9 +165,9 @@ package:smoke:
       </configuration>
       EOF
 
-    # net8.0 to match what real Godot 4.x consumers target.
-    # EmitCompilerGeneratedFiles is what puts the generated sources on disk for
-    # check 3 below.
+    # EmitCompilerGeneratedFiles is what puts the generated sources on disk, so
+    # a failure here leaves the actual generator output in the job artifacts to
+    # look at instead of just a compiler error.
     - |
       cat > smoke.csproj <<EOF
       <Project Sdk="Microsoft.NET.Sdk">
@@ -161,10 +181,68 @@ package:smoke:
           <PackageReference Include="GodotSharp" Version="$GODOT_SHARP_VERSION" />
           <PackageReference Include="$PKG_ID" Version="$PKG_VERSION" />
         </ItemGroup>
+        <ItemGroup>
+          <AdditionalFiles Include="project.godot" />
+          <AdditionalFiles Include="fixture/**/*.tscn" />
+        </ItemGroup>
       </Project>
       EOF
 
-    - echo 'internal static class Smoke { internal static void Main() { } }' > Smoke.cs
+    # Fixture Godot project file. ActionGenerator reads [input] and
+    # GroupGenerator reads [global_group]; both stop at the next [section], so
+    # the [application] header above them is deliberate — it proves the parsers
+    # skip sections they do not own rather than swallowing the whole file.
+    # Quoted heredocs from here down: this content must reach disk verbatim,
+    # never through shell expansion.
+    - |
+      cat > project.godot <<'EOF'
+      [application]
+
+      config/name="smoke"
+
+      [global_group]
+
+      enemies="Every hostile unit"
+      players="Player controlled units"
+
+      [input]
+
+      move_forward={
+      "deadzone": 0.5
+      }
+      ui_smoke_accept={
+      "deadzone": 0.5
+      }
+      EOF
+
+    # SceneGenerator only reads the .tscn's *path*, never its contents, but a
+    # plausible file keeps this honest. player_ship -> PathPlayerShip via
+    # SnakeToCamelCase.
+    - mkdir -p fixture
+    - |
+      cat > fixture/player_ship.tscn <<'EOF'
+      [gd_scene format=3]
+
+      [node name="PlayerShip" type="Node2D"]
+      EOF
+
+    # Check 4. Every member referenced here comes from a different generator and
+    # exists only if that generator ran against the fixtures above. The compiler
+    # is the assertion.
+    - |
+      cat > Smoke.cs <<'EOF'
+      using Godot;
+      using GenUtilities;
+
+      internal static class Smoke {
+          internal static void Main() {
+              StringName action = Actions.moveforward;   // ActionGenerator, [input]
+              StringName group = Groups.enemies;         // GroupGenerator, [global_group]
+              string scenePath = Scenes.PathPlayerShip;  // SceneGenerator, *.tscn
+              System.Console.WriteLine($"{action} {group} {scenePath}");
+          }
+      }
+      EOF
 
     - dotnet restore
 
@@ -183,11 +261,16 @@ package:smoke:
         exit 1
       fi
 
+    # Checks 3 and 4 both happen in this one build: CS8032-as-error catches a
+    # generator that failed to load, and Smoke.cs fails to compile if the
+    # fixture-driven generators produced nothing.
     - dotnet build -c Release
 
-    # 3: the generators actually ran. AutowireAttribute is emitted
-    # unconditionally by AutowireGenerator (it needs no annotated types to
-    # exist), so its absence means the generator did not run at all.
+    # Belt and braces, purely for the error message. If the build above somehow
+    # passes with no generated output at all, this says so in one line instead
+    # of leaving someone to infer it. AutowireAttribute is emitted
+    # unconditionally by AutowireGenerator (it needs no annotated types and no
+    # AdditionalFiles), so its absence means nothing ran.
     - |
       MARKER="obj/Release/net10.0/generated/Generators/GenUtilities.AutowireGenerator/AutowireAttribute.g.cs"
       if [ ! -f "$MARKER" ]; then
