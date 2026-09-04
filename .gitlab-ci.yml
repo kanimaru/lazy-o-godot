@@ -343,6 +343,11 @@ auto-tag:
     # `sh -c "<script>"` becomes `git sh -c "<script>"` — hence
     # "git: 'sh' is not a git command." Blank it so the runner's shell runs.
     entrypoint: [""]
+  # No `needs:`, so GitLab would otherwise hand this job every artifact from the
+  # test stage — including package:smoke's generated sources, which this job has
+  # no use for. Harmless here (it only runs git), but the stage ordering is what
+  # gates this job, not the artifacts.
+  dependencies: []
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
@@ -385,11 +390,24 @@ auto-tag:
 publish:nuget:
   extends: .dotnet
   stage: publish
+  # artifacts: false on the two test jobs — this job needs them as *gates*, not
+  # for their output. package:smoke's artifacts are the smoke consumer's
+  # generated Godot code under smoke/generated/, and downloading that into the
+  # workspace puts .cs files under the repo root, where this project's default
+  # `**/*.cs` glob picks them up and the pack below dies with CS0246 on code it
+  # does not own. (The csproj also excludes smoke/ explicitly, so this is
+  # belt-and-braces — but not fetching megabytes of artifacts a job will never
+  # read is right regardless.)
+  #
+  # auto-tag keeps its artifacts: its dotenv report is the only way
+  # $RELEASE_VERSION reaches this job.
   needs:
     - job: auto-tag
       optional: true
     - job: build
+      artifacts: false
     - job: package:smoke
+      artifacts: false
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

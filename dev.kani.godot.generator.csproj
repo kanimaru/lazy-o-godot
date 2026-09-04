@@ -18,6 +18,28 @@
         <AssemblyName>Generators</AssemblyName>
     </PropertyGroup>
 
+    <!-- This project lives at the repository root, so the SDK's default compile
+         glob is `**/*.cs` for the entire repo, minus only bin/ and obj/.
+         Anything that drops C# anywhere under the root therefore becomes part of
+         *this* compilation.
+
+         `smoke/` is exactly that: the CI throwaway consumer project (see
+         .gitlab-ci.yml, package:smoke) writes generated Godot code into
+         smoke/generated/. Left globbed in, `dotnet build`/`dotnet pack` at the
+         root tries to compile Godot-dependent code inside a netstandard2.1
+         analyzer project that has no Godot reference, and dies with a wall of
+         CS0246 pointing at files this project does not own. That happens in CI
+         whenever a later job downloads package:smoke's artifacts, and locally
+         to anyone who runs the smoke flow by hand.
+
+         .gitignore does not help here — it governs git, not MSBuild globs. -->
+    <ItemGroup>
+        <Compile Remove="smoke/**" />
+        <None Remove="smoke/**" />
+        <Compile Remove="pkg/**" />
+        <None Remove="pkg/**" />
+    </ItemGroup>
+
     <!-- ===================================================================
          NuGet packaging — a Roslyn analyzer package, not a library package
          ===================================================================
