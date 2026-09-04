@@ -170,7 +170,7 @@ package:smoke:
     # look at instead of just a compiler error.
     - |
       cat > smoke.csproj <<EOF
-      <Project Sdk="Microsoft.NET.Sdk">
+      <Project Sdk="Godot.NET.Sdk/$GODOT_SHARP_VERSION">
         <PropertyGroup>
           <TargetFramework>net10.0</TargetFramework>
           <Nullable>enable</Nullable>
@@ -178,7 +178,6 @@ package:smoke:
           <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
         </PropertyGroup>
         <ItemGroup>
-          <PackageReference Include="GodotSharp" Version="$GODOT_SHARP_VERSION" />
           <PackageReference Include="$PKG_ID" Version="$PKG_VERSION" />
         </ItemGroup>
         <ItemGroup>
