@@ -102,7 +102,7 @@ build:warnings:
 #
 # So this job packs the package and then consumes it the way a real project
 # does — PackageReference, from a local feed, against real Godot fixture files
-# — and asserts the generators actually produced usable members. Four distinct
+# — and asserts the generators actually produced usable members. Five distinct
 # checks, each catching a different silent failure:
 #
 #   1. analyzers/dotnet/cs/Generators.dll exists in the *restored* package.
@@ -118,6 +118,10 @@ build:warnings:
 #      the compiler rather than by grepping output: if any of those generators
 #      stops emitting, the build dies with CS0117 instead of quietly producing
 #      an empty class.
+#   5. the packed nuspec declares developmentDependency. That flag is what makes
+#      NuGet apply PrivateAssets=all for a PackageReference consumer; without it
+#      the generator flows on to anything consuming a consumer, and every
+#      consumer has to write that metadata into its own csproj by hand.
 #
 # Two things this consumer needs that are easy to get wrong:
 #
@@ -271,6 +275,15 @@ package:smoke:
       if [ -d "$RESTORED/lib" ]; then
         echo "FAIL: the package has a lib/ directory — IncludeBuildOutput is back on."
         echo "      That ships the generator as a runtime reference, not an analyzer."
+        exit 1
+      fi
+      NUSPEC="$RESTORED/$PKG_DIR_ID.nuspec"
+      if ! grep -q '<developmentDependency>true</developmentDependency>' "$NUSPEC"; then
+        echo "FAIL: the nuspec does not declare developmentDependency."
+        echo "      NuGet then stops applying PrivateAssets=all for consumers, so the"
+        echo "      generator leaks onward and every consumer must write the metadata"
+        echo "      by hand. Check <DevelopmentDependency> in the csproj."
+        cat "$NUSPEC"
         exit 1
       fi
 

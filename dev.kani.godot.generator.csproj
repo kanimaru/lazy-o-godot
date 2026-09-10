@@ -70,6 +70,16 @@
         <IsPackable>true</IsPackable>
         <IncludeBuildOutput>false</IncludeBuildOutput>
         <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+        <!-- DevelopmentDependency=true writes <developmentDependency>true</developmentDependency>
+             into the nuspec, and a PackageReference consumer honours that as an implicit
+             PrivateAssets=all: the analyzer is loaded by that project's own compiler and does
+             not flow on to anything consuming *it*. Without the flag the package is silently
+             re-exported by every consumer that forgets to write the metadata by hand.
+
+             PrivateAssets is the only asset knob that matters for this package. The usual
+             six-tag IncludeAssets incantation exists to drop `compile`, and IncludeBuildOutput
+             above already means there is no lib/ to compile against. -->
+        <DevelopmentDependency>true</DevelopmentDependency>
 
         <!-- Local/dev fallback only. CI always overrides this with -p:Version=
              from the release tag, so this number is not the source of truth. -->
