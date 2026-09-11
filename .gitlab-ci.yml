@@ -370,8 +370,15 @@ auto-tag:
   # no use for. Harmless here (it only runs git), but the stage ordering is what
   # gates this job, not the artifacts.
   dependencies: []
+  # `changes:` is what stops a Readme fix from cutting a release. Only the generator sources and
+  # its project file count, because that is what ends up in the .nupkg. Deliberately NOT including
+  # .gitlab-ci.yml: editing the pipeline is not shipping a new generator, and including it would
+  # mean every CI tweak burns a version number.
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - "*.cs"
+        - dev.kani.godot.generator.csproj
   script:
     - |
       # --prune --prune-tags because the docker executor reuses each runner slot's build
