@@ -30,6 +30,7 @@ stages:
   - test
   - tag
   - publish
+  - release
 
 # Avoid the duplicate-pipeline problem: one pipeline per MR, one per push to a
 # branch with no open MR, plus tags. auto-tag's own tag push below is separately
@@ -360,7 +361,11 @@ package:smoke:
 auto-tag:
   stage: tag
   image:
-    name: alpine/git:latest
+    # Pinned, unlike every other image here, because this is the only job that
+    # writes to the repository: it creates and pushes a release tag. A silent
+    # major bump in git's behaviour belongs nowhere near that. The dotquay
+    # pipeline pins the same image for the same job.
+    name: alpine/git:2.47.2
     # alpine/git's ENTRYPOINT is `git`, not a shell, so the runner's default
     # `sh -c "<script>"` becomes `git sh -c "<script>"` — hence
     # "git: 'sh' is not a git command." Blank it so the runner's shell runs.
@@ -403,6 +408,7 @@ auto-tag:
       echo "latest release: $LATEST_TAG -> tagging $CI_COMMIT_SHORT_SHA as $NEW_TAG"
 
       echo "RELEASE_VERSION=$NEXT" >> release.env
+      echo "RELEASE_TAG=$NEW_TAG" >> release.env
 
       git tag "$NEW_TAG" "$CI_COMMIT_SHA"
       git push -o ci.skip origin "refs/tags/$NEW_TAG"
@@ -468,3 +474,82 @@ publish:nuget:
   environment:
     name: registry
     url: $CI_SERVER_URL/$CI_PROJECT_PATH/-/packages
+
+# ---------------------------------------------------------------------------
+# release:* — a GitLab Release per version, pointing at the published package
+# ---------------------------------------------------------------------------
+# Ported from the dotquay pipeline, which is the only one of the three sibling
+# repos that creates one. By the time this runs the .nupkg is already published,
+# so a Release adds nothing to distribution. What it adds is a per-version page
+# with a stable URL — somewhere a changelog, a breaking-change note, or "this one
+# is bad, skip it" can live. Without it the only record a version ever gets is a
+# row in the package registry, which has nowhere to write that down.
+#
+# Two jobs with disjoint rules rather than one, and the reason is a real
+# constraint rather than taste: `release:tag_name` is expanded as a CI variable
+# and cannot take the shell fallback that publish:nuget uses for PKG_VERSION.
+# A human-pushed tag and auto-tag's reserved version arrive by different routes,
+# so each job states the spelling it can know statically. Everything they share
+# lives in .release.
+#
+# Deliberately not gated on the smoke test directly: publish:nuget already
+# `needs` it, and a Release for a version that was never published is the one
+# outcome worth making structurally impossible.
+.release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  # release-cli does the work from the `release:` keyword below; the script only
+  # has to exist and succeed. Echoing the tag makes the job log say which version
+  # it made, which is otherwise only visible in the API response.
+  script:
+    - echo "creating a GitLab Release for $RELEASE_FOR"
+
+release:tagged:
+  extends: .release
+  needs:
+    - job: publish:nuget
+      artifacts: false
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  variables:
+    RELEASE_FOR: $CI_COMMIT_TAG
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: "Dev.Kani.Godot.Generator $CI_COMMIT_TAG"
+    description: |
+      Roslyn source generators for Godot C#: autowiring nodes, scene and resource
+      paths, signals, groups, singletons, logging and sync helpers.
+
+      Add it with `dotquay add Dev.Kani.Godot.Generator`, or reference it directly
+      from this project's NuGet feed.
+    assets:
+      links:
+        - name: "Dev.Kani.Godot.Generator on the package registry"
+          url: "$CI_SERVER_URL/$CI_PROJECT_PATH/-/packages"
+
+release:auto:
+  extends: .release
+  # auto-tag is NOT optional here, unlike in publish:nuget: this job only runs on
+  # the default branch, which is exactly the case where auto-tag ran and reserved
+  # the version. Its dotenv is the only source of RELEASE_TAG.
+  needs:
+    - job: auto-tag
+    - job: publish:nuget
+      artifacts: false
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  variables:
+    RELEASE_FOR: $RELEASE_TAG
+  release:
+    tag_name: $RELEASE_TAG
+    name: "Dev.Kani.Godot.Generator $RELEASE_TAG"
+    description: |
+      Roslyn source generators for Godot C#: autowiring nodes, scene and resource
+      paths, signals, groups, singletons, logging and sync helpers.
+
+      Add it with `dotquay add Dev.Kani.Godot.Generator`, or reference it directly
+      from this project's NuGet feed.
+    assets:
+      links:
+        - name: "Dev.Kani.Godot.Generator on the package registry"
+          url: "$CI_SERVER_URL/$CI_PROJECT_PATH/-/packages"
