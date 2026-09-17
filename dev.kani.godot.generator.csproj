@@ -98,6 +98,12 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- Release tracking for RxSchedulerAnalyzer (RS2008). -->
+        <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
+        <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
+    </ItemGroup>
+
+    <ItemGroup>
         <!-- PrivateAssets=all on all of these: the compiler host provides the
              Roslyn assemblies at analyzer load time. Shipping or declaring them
              would at best be dead weight and at worst load the wrong version. -->
