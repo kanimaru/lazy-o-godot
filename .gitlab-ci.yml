@@ -342,12 +342,21 @@ package:smoke:
 # `needs: [{job: auto-tag, optional: true}]` — optional because auto-tag does
 # not run at all in MR or manual-tag pipelines.
 #
-# Needs a $VERSION_BUMP_TOKEN CI/CD variable (protected + masked): a Project
-# Access Token, Settings → Access Tokens, scope write_repository, role Developer
-# or higher. $CI_JOB_TOKEN can push to this project's package registry but not
-# commits or tags. If the default branch is protected, that token's role also
-# needs "allowed to push" on it (and protected tags a matching allowance for
-# `v*`), or this job fails at the push step.
+# Pushes with $CI_JOB_TOKEN, so this project needs "Allow Git push requests to
+# the repository" under Settings → CI/CD → Job token permissions (introduced
+# 17.2 behind a flag, GA in 18.4). The token pushes with the permissions of
+# whoever started the pipeline, so a protected default branch and protected
+# `v*` tags need no separate role kept in step with them — which is the failure
+# mode a dedicated token invites, since nothing tells you it has drifted until
+# a release stops. Without the setting the push fails with "You are not allowed
+# to push code to this project".
+#
+# This replaced a $VERSION_BUMP_TOKEN Project Access Token embedded in the push
+# URL. A URL credential is copied into .git/config and echoed back verbatim in
+# any push error message, which is how a masked variable ends up unmasked in a
+# job log — dotquay's SPEC 11.2 rejects URL-embedded credentials for that
+# reason, and this was the last copy of the pattern across these three repos.
+# Do not put a credential back into the remote URL here.
 auto-tag:
   stage: tag
   image:
@@ -382,7 +391,7 @@ auto-tag:
       echo "RELEASE_VERSION=$NEXT" >> release.env
 
       git tag "$NEW_TAG" "$CI_COMMIT_SHA"
-      git push -o ci.skip "https://lazy-o-ci:${VERSION_BUMP_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "refs/tags/$NEW_TAG"
+      git push -o ci.skip origin "refs/tags/$NEW_TAG"
   artifacts:
     reports:
       dotenv: release.env
