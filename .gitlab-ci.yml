@@ -374,7 +374,14 @@ auto-tag:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
     - |
-      git fetch origin --tags --quiet
+      # --prune --prune-tags because the docker executor reuses each runner slot's build
+      # volume and `git init`/`git clean` preserve refs: a tag from a run whose push then
+      # FAILED would otherwise survive and become the baseline the next version is bumped
+      # off. --force because pruning only removes tags the remote lacks: a stale tag that
+      # shares its name with one a later run shipped from another slot makes the fetch
+      # refuse ("would clobber existing tag") and exit 1 - dotquay job 6147. The remote is
+      # the only authority on what shipped. No --quiet: it hides exactly that rejection.
+      git fetch origin --tags --force --prune --prune-tags
 
       LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
       if [ -z "$LATEST_TAG" ]; then LATEST_TAG="v0.0.0"; fi
