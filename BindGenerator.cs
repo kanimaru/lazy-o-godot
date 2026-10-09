@@ -126,7 +126,18 @@ public class BindGenerator : IIncrementalGenerator {
 			if (instanceMatch.Success) // It's an instanced scene
 			{
 				var instanceId = instanceMatch.Groups[1].Value;
-				if (sceneResources.TryGetValue(instanceId, out var scenePath)) {
+				// A script set on the instance itself replaces the instanced scene's root script.
+				var overrideMatch = Regex.Match(block, @"^script\s*=\s*ExtResource\(""([^""]+)""\)", RegexOptions.Multiline);
+				if (overrideMatch.Success && scriptResources.TryGetValue(overrideMatch.Groups[1].Value, out var overridePath)) {
+					var overrideSymbol = allTypes[Path.GetFileNameWithoutExtension(overridePath)].FirstOrDefault();
+					if (overrideSymbol != null) {
+						nodeType = overrideSymbol.ToDisplayString();
+						if (!overrideSymbol.ContainingNamespace.IsGlobalNamespace)
+							classDefinition.UsingNamespaceName.Add(overrideSymbol.ContainingNamespace.ToDisplayString());
+					}
+				}
+
+				if (nodeType == null && sceneResources.TryGetValue(instanceId, out var scenePath)) {
 					var sceneClassName = Path.GetFileNameWithoutExtension(scenePath);
 					var typeSymbol = allTypes[sceneClassName].FirstOrDefault();
 					if (typeSymbol != null) {
@@ -138,7 +149,7 @@ public class BindGenerator : IIncrementalGenerator {
 						// No C# class backs the instanced scene by its file name — inspect
 						// that scene's root (owner) node: prefer the C# class attached via its
 						// script, otherwise fall back to the Godot type, e.g. "Control".
-						nodeType = ResolveInstancedSceneRootType(context, sceneFiles, scenePath,
+						nodeType = ResolveInstancedSceneRootType(context, compilation, sceneFiles, scenePath,
 							allTypes, classDefinition);
 					}
 				}
@@ -147,7 +158,7 @@ public class BindGenerator : IIncrementalGenerator {
 				var typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
 				if (!typeMatch.Success) continue; // Regular nodes must have a type.
 
-				nodeType = typeMatch.Groups[1].Value; // Default to the node's type
+				nodeType = GodotTypeName(compilation, typeMatch.Groups[1].Value); // Default to the node's type
 
 				var scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
 				if (scriptMatch.Success) // Check for a script to get a more specific type
@@ -180,7 +191,7 @@ public class BindGenerator : IIncrementalGenerator {
 		if (classDefinition.MemberDefinitions.Count > 0) GenerateClass(context, classDefinition);
 	}
 
-	private static string? ResolveInstancedSceneRootType(SourceProductionContext context,
+	private static string? ResolveInstancedSceneRootType(SourceProductionContext context, Compilation compilation,
 		ImmutableArray<AdditionalText> sceneFiles, string scenePath,
 		ILookup<string, INamedTypeSymbol> allTypes, ClassDefinition classDefinition) {
 		var normalized = scenePath.Replace('\\', '/');
@@ -236,7 +247,19 @@ public class BindGenerator : IIncrementalGenerator {
 
 		// Otherwise fall back to the Godot type of the root node, e.g. "Control".
 		var typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
-		return typeMatch.Success ? typeMatch.Groups[1].Value : null;
+		return typeMatch.Success ? GodotTypeName(compilation, typeMatch.Groups[1].Value) : null;
+	}
+
+	/// <summary>
+	/// The C# name of the Godot class a scene names: the bindings spell acronyms in Pascal case, so the scene's
+	/// <c>GPUParticles3D</c> is <c>GpuParticles3D</c> in C# (<c>CSGBox3D</c>, <c>HTTPRequest</c>, ... likewise).
+	/// </summary>
+	private static string GodotTypeName(Compilation compilation, string sceneType) {
+		if (compilation.GetTypeByMetadataName("Godot." + sceneType) is not null) return sceneType;
+		var godot = compilation.GlobalNamespace.GetNamespaceMembers().FirstOrDefault(n => n.Name == "Godot");
+		var match = godot?.GetTypeMembers()
+			.FirstOrDefault(t => string.Equals(t.Name, sceneType, StringComparison.OrdinalIgnoreCase));
+		return match?.Name ?? sceneType;
 	}
 
 	private static void GenerateClass(SourceProductionContext context, ClassDefinition definition) {
