@@ -38,7 +38,7 @@ public class ResourceGenerator : IIncrementalGenerator {
             "ResourcePathAttribute.g.cs",
             SourceText.From(AttributeSourceCode, Encoding.UTF8)));
 
-        var classPaths = context.SyntaxProvider
+        IncrementalValueProvider<ImmutableArray<(ClassDeclarationSyntax, string path)>> classPaths = context.SyntaxProvider
             .CreateSyntaxProvider(
                 (s, _) => s is ClassDeclarationSyntax,
                 (ctx, _) => GetClassDeclaration(ctx))
@@ -46,10 +46,10 @@ public class ResourceGenerator : IIncrementalGenerator {
             .Select((t, _) => (t.Item1, t.path))
             .Collect();
 
-        var provider2 = context.AdditionalTextsProvider.Combine(classPaths)
+        IncrementalValuesProvider<Storage> provider2 = context.AdditionalTextsProvider.Combine(classPaths)
             .Where(CheckResourcePath)
             .Select((t1, _) => {
-                var classDeclarationForPath = GetClassDeclarationForPath(t1);
+                (ClassDeclarationSyntax, string path) classDeclarationForPath = GetClassDeclarationForPath(t1);
                 return new Storage(t1.Left, classDeclarationForPath.Item1, classDeclarationForPath.path);
             });
 
@@ -59,17 +59,17 @@ public class ResourceGenerator : IIncrementalGenerator {
 
     private (ClassDeclarationSyntax, string path) GetClassDeclarationForPath((AdditionalText file,
         ImmutableArray<(ClassDeclarationSyntax, string path)> ClassDeclarationSyntax) tuple) {
-        var realFilePath = tuple.file.Path;
-        var relativeFilePath = Path.GetDirectoryName(realFilePath)?.Replace("\\", "/");
+        string realFilePath = tuple.file.Path;
+        string? relativeFilePath = Path.GetDirectoryName(realFilePath)?.Replace("\\", "/");
         return tuple.ClassDeclarationSyntax.First(data => relativeFilePath!.EndsWith(data.path));
     }
 
     private static bool CheckResourcePath(
         (AdditionalText file, ImmutableArray<(ClassDeclarationSyntax, string path)> Right) tuple) {
         Console.WriteLine("AdditionalText: " + tuple.file.Path);
-        var realFilePath = tuple.file.Path;
-        var filePathToCheck = tuple.Right.Select(data => data.path);
-        var relativeFilePath = Path.GetDirectoryName(realFilePath)?.Replace("\\", "/");
+        string realFilePath = tuple.file.Path;
+        IEnumerable<string> filePathToCheck = tuple.Right.Select(data => data.path);
+        string? relativeFilePath = Path.GetDirectoryName(realFilePath)?.Replace("\\", "/");
         return filePathToCheck.Any(path => relativeFilePath?.EndsWith(path) ?? false);
     }
 
@@ -77,17 +77,25 @@ public class ResourceGenerator : IIncrementalGenerator {
         GeneratorSyntaxContext context) {
         var classDeclarationSyntax = (ClassDeclarationSyntax)context.Node;
 
-        foreach (var attributeSyntax in classDeclarationSyntax
+        foreach (AttributeSyntax attributeSyntax in classDeclarationSyntax
                      .AttributeLists
                      .SelectMany(attributeListSyntax => attributeListSyntax.Attributes)) {
-            var symbolInfo = context.SemanticModel.GetSymbolInfo(attributeSyntax);
-            if (symbolInfo.Symbol is not IMethodSymbol attributeSymbol) continue;
-            if (attributeSymbol.ContainingType.ToDisplayString() != $"{Namespace}.{AttributeName}") continue;
-            var parameter = attributeSyntax.ArgumentList;
-            var pathArgument = parameter?.Arguments[0];
+            SymbolInfo symbolInfo = context.SemanticModel.GetSymbolInfo(attributeSyntax);
+            if (symbolInfo.Symbol is not IMethodSymbol attributeSymbol) {
+                continue;
+            }
 
-            var path = "";
-            if (pathArgument?.Expression is LiteralExpressionSyntax literal) path = literal.Token.ValueText;
+            if (attributeSymbol.ContainingType.ToDisplayString() != $"{Namespace}.{AttributeName}") {
+                continue;
+            }
+
+            AttributeArgumentListSyntax? parameter = attributeSyntax.ArgumentList;
+            AttributeArgumentSyntax? pathArgument = parameter?.Arguments[0];
+
+            string path = "";
+            if (pathArgument?.Expression is LiteralExpressionSyntax literal) {
+                path = literal.Token.ValueText;
+            }
 
             Console.WriteLine("Add to resources: " + path);
             return (classDeclarationSyntax, true, path);
@@ -102,73 +110,89 @@ public class ResourceGenerator : IIncrementalGenerator {
         IEnumerable<Storage> storages) {
         Dictionary<string, ClassDefinition> classDefinitions = new();
 
-        foreach (var storage in storages) {
-            var path = storage.Path;
-            var text = storage.Text;
-            var classDeclarationSyntax = storage.ClassDeclarationSyntax;
+        foreach (Storage storage in storages) {
+            string path = storage.Path;
+            AdditionalText text = storage.Text;
+            ClassDeclarationSyntax classDeclarationSyntax = storage.ClassDeclarationSyntax;
 
-            var firstLine = text.GetText()?.Lines[0].ToString();
-            if (firstLine == null) continue;
-            var scriptNameMatch = Regex.Match(firstLine, @"script_class=""(.+?)""");
-            if (!scriptNameMatch.Success) scriptNameMatch = Regex.Match(firstLine, @"type=""(.+?)""");
-
-            var scriptName = scriptNameMatch.Groups[1].Value;
-            var fileName = Path.GetFileNameWithoutExtension(text.Path);
-
-            var scriptNamespaceType = FindClassSymbol(compilation.GlobalNamespace, scriptName);
-            var scriptNamespace = scriptNamespaceType?.ContainingNamespace.ToDisplayString();
-
-            var semanticModel = compilation.GetSemanticModel(classDeclarationSyntax.SyntaxTree);
-            if (semanticModel.GetDeclaredSymbol(classDeclarationSyntax) is not INamedTypeSymbol classSymbol)
+            string? firstLine = text.GetText()?.Lines[0].ToString();
+            if (firstLine == null) {
                 continue;
+            }
 
-            var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
-            var className = classDeclarationSyntax.Identifier.Text;
+            Match scriptNameMatch = Regex.Match(firstLine, @"script_class=""(.+?)""");
+            if (!scriptNameMatch.Success) {
+                scriptNameMatch = Regex.Match(firstLine, @"type=""(.+?)""");
+            }
 
-            var key = $"{namespaceName}.{className}";
-            if (!classDefinitions.ContainsKey(key))
+            string scriptName = scriptNameMatch.Groups[1].Value;
+            string fileName = Path.GetFileNameWithoutExtension(text.Path);
+
+            INamedTypeSymbol? scriptNamespaceType = FindClassSymbol(compilation.GlobalNamespace, scriptName);
+            string? scriptNamespace = scriptNamespaceType?.ContainingNamespace.ToDisplayString();
+
+            SemanticModel semanticModel = compilation.GetSemanticModel(classDeclarationSyntax.SyntaxTree);
+            if (semanticModel.GetDeclaredSymbol(classDeclarationSyntax) is not INamedTypeSymbol classSymbol) {
+                continue;
+            }
+
+            string namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
+            string className = classDeclarationSyntax.Identifier.Text;
+
+            string key = $"{namespaceName}.{className}";
+            if (!classDefinitions.ContainsKey(key)) {
                 classDefinitions[key] = new ClassDefinition {
                     ClassName = className,
                     NamespaceName = namespaceName
                 };
+            }
 
-            var def = classDefinitions[key];
+            ClassDefinition def = classDefinitions[key];
             def.Resources.Add(new ResourceDefinition {
                 Type = scriptName,
                 FieldName = fileName,
                 FilePath = path + "/" + fileName + ".tres"
             });
 
-            if (scriptNamespace != null) def.UsingDefinitionSet.Add(scriptNamespace);
+            if (scriptNamespace != null) {
+                def.UsingDefinitionSet.Add(scriptNamespace);
+            }
         }
 
-        foreach (var classDefinition in classDefinitions.Values) {
+        foreach (ClassDefinition classDefinition in classDefinitions.Values) {
             var resources = new StringBuilder();
             var allDefinition = new StringBuilder();
             var usingDefinition = new StringBuilder();
 
-            foreach (var def in classDefinition.UsingDefinitionSet) usingDefinition.AppendLine($"using {def};");
+            foreach (string def in classDefinition.UsingDefinitionSet) {
+                usingDefinition.AppendLine($"using {def};");
+            }
 
-            if (!classDefinition.UsingDefinitionSet.Contains("Godot")) usingDefinition.AppendLine("using Godot;");
+            if (!classDefinition.UsingDefinitionSet.Contains("Godot")) {
+                usingDefinition.AppendLine("using Godot;");
+            }
 
-            foreach (var resource in classDefinition.Resources)
+            foreach (ResourceDefinition resource in classDefinition.Resources) {
                 resources.AppendLine(
                     $"""
                          public static readonly {resource.Type} {resource.FieldName} =
                              GD.Load<{resource.Type}>(ProjectSettings.GlobalizePath("res://{resource.FilePath}"));
                      """);
+            }
 
-            var resourceType = "";
-            var allTyped = true;
-            foreach (var resource in classDefinition.Resources) {
-                if (resourceType != "" && resourceType != resource.Type) allTyped = false;
+            string resourceType = "";
+            bool allTyped = true;
+            foreach (ResourceDefinition resource in classDefinition.Resources) {
+                if (resourceType != "" && resourceType != resource.Type) {
+                    allTyped = false;
+                }
 
                 resourceType = resource.Type;
                 allDefinition.AppendLine(
                     $"       {resource.FieldName},");
             }
 
-            var allMethod = "";
+            string allMethod = "";
             if (allTyped) {
                 allMethod =
                     $"""
@@ -183,7 +207,7 @@ public class ResourceGenerator : IIncrementalGenerator {
                      """;
             }
 
-            var code =
+            string code =
                 $$"""
                   // <auto-generated/>
                   using System;
@@ -203,13 +227,17 @@ public class ResourceGenerator : IIncrementalGenerator {
 
     private INamedTypeSymbol? FindClassSymbol(INamespaceSymbol namespaceSymbol, string className) {
         // Look for the class in the types of the current namespace
-        var classSymbol = namespaceSymbol.GetTypeMembers().FirstOrDefault(t => t.Name == className);
-        if (classSymbol != null) return classSymbol;
+        INamedTypeSymbol? classSymbol = namespaceSymbol.GetTypeMembers().FirstOrDefault(t => t.Name == className);
+        if (classSymbol != null) {
+            return classSymbol;
+        }
 
         // Recursively search in the child namespaces
-        foreach (var childNamespace in namespaceSymbol.GetNamespaceMembers()) {
+        foreach (INamespaceSymbol childNamespace in namespaceSymbol.GetNamespaceMembers()) {
             classSymbol = FindClassSymbol(childNamespace, className);
-            if (classSymbol != null) return classSymbol;
+            if (classSymbol != null) {
+                return classSymbol;
+            }
         }
 
         return null;

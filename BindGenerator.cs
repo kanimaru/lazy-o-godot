@@ -14,7 +14,7 @@ namespace GenUtilities;
 [Generator]
 public class BindGenerator : IIncrementalGenerator {
     public void Initialize(IncrementalGeneratorInitializationContext context) {
-        var classProvider = context.SyntaxProvider
+        IncrementalValuesProvider<INamedTypeSymbol> classProvider = context.SyntaxProvider
             .CreateSyntaxProvider(
                 (s, _) => s is ClassDeclarationSyntax,
                 (ctx, _) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node) as INamedTypeSymbol)
@@ -22,20 +22,20 @@ public class BindGenerator : IIncrementalGenerator {
             .Collect()
             .SelectMany((symbols, _) => symbols.Distinct(SymbolEqualityComparer.Default).Cast<INamedTypeSymbol>());
 
-        var sceneFilesProvider = context.AdditionalTextsProvider
+        IncrementalValuesProvider<AdditionalText> sceneFilesProvider = context.AdditionalTextsProvider
             .Where(file => file.Path.EndsWith(".tscn", System.StringComparison.OrdinalIgnoreCase));
 
-        var classesAndScenesProvider = classProvider.Combine(sceneFilesProvider.Collect());
+        IncrementalValuesProvider<(INamedTypeSymbol Left, ImmutableArray<AdditionalText> Right)> classesAndScenesProvider = classProvider.Combine(sceneFilesProvider.Collect());
 
-        var finalProvider = classesAndScenesProvider.Combine(context.CompilationProvider);
+        IncrementalValuesProvider<((INamedTypeSymbol Left, ImmutableArray<AdditionalText> Right) Left, Compilation Right)> finalProvider = classesAndScenesProvider.Combine(context.CompilationProvider);
 
         context.RegisterSourceOutput(finalProvider, (spc, source) => {
-            var classAndScenes = source.Left;
-            var compilation = source.Right;
-            var classSymbol = classAndScenes.Left;
-            var sceneFiles = classAndScenes.Right;
+            (INamedTypeSymbol Left, ImmutableArray<AdditionalText> Right) classAndScenes = source.Left;
+            Compilation compilation = source.Right;
+            INamedTypeSymbol classSymbol = classAndScenes.Left;
+            ImmutableArray<AdditionalText> sceneFiles = classAndScenes.Right;
 
-            var sceneFile = sceneFiles.FirstOrDefault(f =>
+            AdditionalText? sceneFile = sceneFiles.FirstOrDefault(f =>
                 string.Equals(Path.GetFileNameWithoutExtension(f.Path), classSymbol!.Name, StringComparison.CurrentCultureIgnoreCase));
 
             if (sceneFile is not null) {
@@ -45,12 +45,15 @@ public class BindGenerator : IIncrementalGenerator {
     }
 
     private static IEnumerable<INamedTypeSymbol> GetAllTypes(INamespaceSymbol root) {
-        foreach (var namespaceOrType in root.GetMembers())
+        foreach (INamespaceOrTypeSymbol namespaceOrType in root.GetMembers()) {
             if (namespaceOrType is INamespaceSymbol subNs) {
-                foreach (var type in GetAllTypes(subNs)) yield return type;
+                foreach (INamedTypeSymbol type in GetAllTypes(subNs)) {
+                    yield return type;
+                }
             } else if (namespaceOrType is INamedTypeSymbol type) {
                 yield return type;
             }
+        }
     }
 
     private class ClassDefinition {
@@ -69,8 +72,10 @@ public class BindGenerator : IIncrementalGenerator {
 
     private void GenerateCode(SourceProductionContext context, Compilation compilation, INamedTypeSymbol classSymbol,
         AdditionalText sceneFile, ImmutableArray<AdditionalText> sceneFiles) {
-        var sceneContent = sceneFile.GetText(context.CancellationToken)?.ToString();
-        if (sceneContent == null || string.IsNullOrEmpty(sceneContent)) return;
+        string? sceneContent = sceneFile.GetText(context.CancellationToken)?.ToString();
+        if (sceneContent == null || string.IsNullOrEmpty(sceneContent)) {
+            return;
+        }
 
         var scriptResources = new Dictionary<string, string>();
         var sceneResources = new Dictionary<string, string>();
@@ -80,17 +85,18 @@ public class BindGenerator : IIncrementalGenerator {
                 RegexOptions.Multiline);
 
         foreach (Match match in extResourceRegex.Matches(sceneContent)) {
-            var type = match.Groups[1].Value;
-            var path = match.Groups[2].Value;
-            var id = match.Groups[3].Value;
+            string type = match.Groups[1].Value;
+            string path = match.Groups[2].Value;
+            string id = match.Groups[3].Value;
 
-            if (type == "Script" && path.EndsWith(".cs"))
+            if (type == "Script" && path.EndsWith(".cs")) {
                 scriptResources[id] = path;
-            else if (type == "PackedScene" && path.EndsWith(".tscn"))
+            } else if (type == "PackedScene" && path.EndsWith(".tscn")) {
                 sceneResources[id] = path;
+            }
         }
 
-        var allTypes = GetAllTypes(compilation.GlobalNamespace).ToLookup(t => t.Name);
+        ILookup<string, INamedTypeSymbol> allTypes = GetAllTypes(compilation.GlobalNamespace).ToLookup(t => t.Name);
 
         var classDefinition = new ClassDefinition {
             ClassName = classSymbol.Name,
@@ -102,49 +108,61 @@ public class BindGenerator : IIncrementalGenerator {
             new List<string>(sceneContent.Split(['\r', '\n'], System.StringSplitOptions.RemoveEmptyEntries));
         var nodeBlocks = new List<string>();
         var currentNodeBlock = new StringBuilder();
-        foreach (var line in contentLines) {
+        foreach (string line in contentLines) {
             if (line.StartsWith("[")) {
-                if (currentNodeBlock.Length > 0) nodeBlocks.Add(currentNodeBlock.ToString());
+                if (currentNodeBlock.Length > 0) {
+                    nodeBlocks.Add(currentNodeBlock.ToString());
+                }
+
                 currentNodeBlock.Clear();
             }
 
             currentNodeBlock.AppendLine(line);
         }
 
-        if (currentNodeBlock.Length > 0) nodeBlocks.Add(currentNodeBlock.ToString());
+        if (currentNodeBlock.Length > 0) {
+            nodeBlocks.Add(currentNodeBlock.ToString());
+        }
 
-        foreach (var block in nodeBlocks) {
-            if (!block.StartsWith("[node ") || !block.Contains("unique_name_in_owner = true")) continue;
+        foreach (string block in nodeBlocks) {
+            if (!block.StartsWith("[node ") || !block.Contains("unique_name_in_owner = true")) {
+                continue;
+            }
 
-            var nameMatch = Regex.Match(block, @"name\s*=\s*""([^""]+)""");
-            if (!nameMatch.Success) continue;
-            var nodeName = nameMatch.Groups[1].Value;
+            Match nameMatch = Regex.Match(block, @"name\s*=\s*""([^""]+)""");
+            if (!nameMatch.Success) {
+                continue;
+            }
+
+            string nodeName = nameMatch.Groups[1].Value;
 
             string? nodeType = null;
 
-            var instanceMatch = Regex.Match(block, @"instance\s*=\s*ExtResource\(""([^""]+)""\)");
+            Match instanceMatch = Regex.Match(block, @"instance\s*=\s*ExtResource\(""([^""]+)""\)");
             if (instanceMatch.Success) // It's an instanced scene
             {
-                var instanceId = instanceMatch.Groups[1].Value;
+                string instanceId = instanceMatch.Groups[1].Value;
                 // A script set on the instance itself replaces the instanced scene's root script.
-                var overrideMatch = Regex.Match(block, @"^script\s*=\s*ExtResource\(""([^""]+)""\)", RegexOptions.Multiline);
-                if (overrideMatch.Success && scriptResources.TryGetValue(overrideMatch.Groups[1].Value, out var overridePath)) {
-                    var overrideSymbol = allTypes[Path.GetFileNameWithoutExtension(overridePath)].FirstOrDefault();
+                Match overrideMatch = Regex.Match(block, @"^script\s*=\s*ExtResource\(""([^""]+)""\)", RegexOptions.Multiline);
+                if (overrideMatch.Success && scriptResources.TryGetValue(overrideMatch.Groups[1].Value, out string? overridePath)) {
+                    INamedTypeSymbol? overrideSymbol = allTypes[Path.GetFileNameWithoutExtension(overridePath)].FirstOrDefault();
                     if (overrideSymbol != null) {
                         nodeType = overrideSymbol.ToDisplayString();
-                        if (!overrideSymbol.ContainingNamespace.IsGlobalNamespace)
+                        if (!overrideSymbol.ContainingNamespace.IsGlobalNamespace) {
                             classDefinition.UsingNamespaceName.Add(overrideSymbol.ContainingNamespace.ToDisplayString());
+                        }
                     }
                 }
 
-                if (nodeType == null && sceneResources.TryGetValue(instanceId, out var scenePath)) {
-                    var sceneClassName = Path.GetFileNameWithoutExtension(scenePath);
-                    var typeSymbol = allTypes[sceneClassName].FirstOrDefault();
+                if (nodeType == null && sceneResources.TryGetValue(instanceId, out string? scenePath)) {
+                    string sceneClassName = Path.GetFileNameWithoutExtension(scenePath);
+                    INamedTypeSymbol? typeSymbol = allTypes[sceneClassName].FirstOrDefault();
                     if (typeSymbol != null) {
                         nodeType = typeSymbol.ToDisplayString();
-                        if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
+                        if (!typeSymbol.ContainingNamespace.IsGlobalNamespace) {
                             classDefinition.UsingNamespaceName.Add(
                                 typeSymbol.ContainingNamespace.ToDisplayString());
+                        }
                     } else {
                         // No C# class backs the instanced scene by its file name — inspect
                         // that scene's root (owner) node: prefer the C# class attached via its
@@ -155,31 +173,36 @@ public class BindGenerator : IIncrementalGenerator {
                 }
             } else // It's a regular node
             {
-                var typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
-                if (!typeMatch.Success) continue; // Regular nodes must have a type.
+                Match typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
+                if (!typeMatch.Success) {
+                    continue; // Regular nodes must have a type.
+                }
 
                 nodeType = SceneRoot.GodotTypeName(compilation, typeMatch.Groups[1].Value); // Default to the node's type
 
-                var scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
+                Match scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
                 if (scriptMatch.Success) // Check for a script to get a more specific type
                 {
-                    var scriptId = scriptMatch.Groups[1].Value;
-                    if (scriptResources.TryGetValue(scriptId, out var scriptPath)) {
-                        var scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
-                        var typeSymbol = allTypes[scriptClassName].FirstOrDefault();
+                    string scriptId = scriptMatch.Groups[1].Value;
+                    if (scriptResources.TryGetValue(scriptId, out string? scriptPath)) {
+                        string scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
+                        INamedTypeSymbol? typeSymbol = allTypes[scriptClassName].FirstOrDefault();
                         if (typeSymbol != null) {
                             nodeType = typeSymbol.ToDisplayString(); // Override with a script class
-                            if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
+                            if (!typeSymbol.ContainingNamespace.IsGlobalNamespace) {
                                 classDefinition.UsingNamespaceName.Add(
                                     typeSymbol.ContainingNamespace.ToDisplayString());
+                            }
                         }
                     }
                 }
             }
 
-            if (string.IsNullOrEmpty(nodeName) || string.IsNullOrEmpty(nodeType)) continue;
+            if (string.IsNullOrEmpty(nodeName) || string.IsNullOrEmpty(nodeType)) {
+                continue;
+            }
 
-            var memberName = $"_{char.ToLowerInvariant(nodeName[0])}{nodeName.Substring(1)}";
+            string memberName = $"_{char.ToLowerInvariant(nodeName[0])}{nodeName.Substring(1)}";
             classDefinition.MemberDefinitions.Add(new MemberDefinition {
                 Name = memberName,
                 Type = nodeType!,
@@ -188,17 +211,21 @@ public class BindGenerator : IIncrementalGenerator {
         }
 
 
-        if (classDefinition.MemberDefinitions.Count > 0) GenerateClass(context, classDefinition);
+        if (classDefinition.MemberDefinitions.Count > 0) {
+            GenerateClass(context, classDefinition);
+        }
     }
 
     private static string? ResolveInstancedSceneRootType(SourceProductionContext context, Compilation compilation,
         ImmutableArray<AdditionalText> sceneFiles, string scenePath,
         ILookup<string, INamedTypeSymbol> allTypes, ClassDefinition classDefinition) {
-        var normalized = scenePath.Replace('\\', '/');
-        var target = sceneFiles.FirstOrDefault(f =>
+        string normalized = scenePath.Replace('\\', '/');
+        AdditionalText? target = sceneFiles.FirstOrDefault(f =>
             f.Path.Replace('\\', '/').EndsWith(normalized, StringComparison.OrdinalIgnoreCase));
-        var content = target?.GetText(context.CancellationToken)?.ToString();
-        if (string.IsNullOrEmpty(content)) return null;
+        string? content = target?.GetText(context.CancellationToken)?.ToString();
+        if (string.IsNullOrEmpty(content)) {
+            return null;
+        }
 
         // Collect the script ext_resources declared by the instanced scene so we can
         // map a script id referenced by the root node back to its C# class.
@@ -208,81 +235,93 @@ public class BindGenerator : IIncrementalGenerator {
                 """^\[ext_resource type="([^"]+)"(?: uid="[^"]+")? path="res:\/\/([^"]+)" id="([^"]+)"\]""",
                 RegexOptions.Multiline);
         foreach (Match match in extResourceRegex.Matches(content!)) {
-            if (match.Groups[1].Value == "Script" && match.Groups[2].Value.EndsWith(".cs"))
+            if (match.Groups[1].Value == "Script" && match.Groups[2].Value.EndsWith(".cs")) {
                 scriptResources[match.Groups[3].Value] = match.Groups[2].Value;
+            }
         }
 
         // The root (owner) node is the first [node ...] block; child nodes carry a parent= attribute.
         // Capture the whole block because the script assignment lives on a line after the header.
         var rootBlock = new StringBuilder();
-        var inRoot = false;
-        foreach (var line in content!.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {
+        bool inRoot = false;
+        foreach (string line in content!.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {
             if (line.StartsWith("[")) {
                 if (line.StartsWith("[node ")) {
-                    if (inRoot) break; // Reached the next node — the root block is complete.
+                    if (inRoot) {
+                        break; // Reached the next node — the root block is complete.
+                    }
+
                     inRoot = true;
                 } else if (inRoot) {
                     break; // A different section after the root node ends the block.
                 }
             }
 
-            if (inRoot) rootBlock.AppendLine(line);
+            if (inRoot) {
+                rootBlock.AppendLine(line);
+            }
         }
 
-        var block = rootBlock.ToString();
-        if (block.Length == 0) return null;
+        string block = rootBlock.ToString();
+        if (block.Length == 0) {
+            return null;
+        }
 
         // Prefer the C# class attached to the root node via its script.
-        var scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
+        Match scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
         if (scriptMatch.Success &&
-            scriptResources.TryGetValue(scriptMatch.Groups[1].Value, out var scriptPath)) {
-            var scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
-            var typeSymbol = allTypes[scriptClassName].FirstOrDefault();
+            scriptResources.TryGetValue(scriptMatch.Groups[1].Value, out string? scriptPath)) {
+            string scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
+            INamedTypeSymbol? typeSymbol = allTypes[scriptClassName].FirstOrDefault();
             if (typeSymbol != null) {
-                if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
+                if (!typeSymbol.ContainingNamespace.IsGlobalNamespace) {
                     classDefinition.UsingNamespaceName.Add(typeSymbol.ContainingNamespace.ToDisplayString());
+                }
+
                 return typeSymbol.ToDisplayString();
             }
         }
 
         // Otherwise fall back to the Godot type of the root node, e.g. "Control".
-        var typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
+        Match typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
         return typeMatch.Success ? SceneRoot.GodotTypeName(compilation, typeMatch.Groups[1].Value) : null;
     }
 
     private static void GenerateClass(SourceProductionContext context, ClassDefinition definition) {
         var fieldCode = new StringBuilder();
-        foreach (var memberDefinition in definition.MemberDefinitions) {
+        foreach (MemberDefinition memberDefinition in definition.MemberDefinitions) {
             fieldCode.AppendLine($"    private {memberDefinition.Type} {memberDefinition.Name};");
         }
 
         var memberCode = new StringBuilder();
-        foreach (var memberDefinition in definition.MemberDefinitions) {
+        foreach (MemberDefinition memberDefinition in definition.MemberDefinitions) {
             memberCode.AppendLine(
                 $"""        {memberDefinition.Name} = GetNode<{memberDefinition.Type}>("%{memberDefinition.NodeName}");""");
         }
 
         var usingCode = new StringBuilder();
-        foreach (var namespaceName in definition.UsingNamespaceName) usingCode.AppendLine($"using {namespaceName};");
+        foreach (string namespaceName in definition.UsingNamespaceName) {
+            usingCode.AppendLine($"using {namespaceName};");
+        }
 
         // Build up the source code
-        var code = $$"""
-		             // <auto-generated/>
+        string code = $$"""
+                        // <auto-generated/>
 
-		             using System;
-		             {{usingCode}}
+                        using System;
+                        {{usingCode}}
 
-		             namespace {{definition.NamespaceName}};
+                        namespace {{definition.NamespaceName}};
 
-		             partial class {{definition.ClassName}}
-		             {
-		             {{fieldCode}}
-		                 private void BindNodes() {
-		             {{memberCode}}
-		                 }
-		             }
+                        partial class {{definition.ClassName}}
+                        {
+                        {{fieldCode}}
+                            private void BindNodes() {
+                        {{memberCode}}
+                            }
+                        }
 
-		             """;
+                        """;
         context.AddSource($"{definition.ClassName}.Binder.g.cs", SourceText.From(code, Encoding.UTF8));
     }
 }

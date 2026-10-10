@@ -49,33 +49,46 @@ public sealed class RxSchedulerAnalyzer : DiagnosticAnalyzer {
         context.EnableConcurrentExecution();
 
         context.RegisterCompilationStartAction(start => {
-            var observable = start.Compilation.GetTypeByMetadataName(ObservableTypeName);
-            var scheduler = start.Compilation.GetTypeByMetadataName(SchedulerTypeName);
-            if (observable is null || scheduler is null) return;
+            INamedTypeSymbol? observable = start.Compilation.GetTypeByMetadataName(ObservableTypeName);
+            INamedTypeSymbol? scheduler = start.Compilation.GetTypeByMetadataName(SchedulerTypeName);
+            if (observable is null || scheduler is null) {
+                return;
+            }
 
-            var timeSpan = start.Compilation.GetTypeByMetadataName("System.TimeSpan");
-            var dateTimeOffset = start.Compilation.GetTypeByMetadataName("System.DateTimeOffset");
+            INamedTypeSymbol? timeSpan = start.Compilation.GetTypeByMetadataName("System.TimeSpan");
+            INamedTypeSymbol? dateTimeOffset = start.Compilation.GetTypeByMetadataName("System.DateTimeOffset");
 
             start.RegisterOperationAction(operationContext => {
                 var invocation = (IInvocationOperation)operationContext.Operation;
-                var method = invocation.TargetMethod.ReducedFrom ?? invocation.TargetMethod;
-                if (!SymbolEqualityComparer.Default.Equals(method.ContainingType, observable)) return;
-                if (method.Parameters.Any(p => IsType(p.Type, scheduler))) return;
+                IMethodSymbol method = invocation.TargetMethod.ReducedFrom ?? invocation.TargetMethod;
+                if (!SymbolEqualityComparer.Default.Equals(method.ContainingType, observable)) {
+                    return;
+                }
 
-                var isTimeBased = TimeWithoutArguments.Contains(method.Name)
-                                  || method.Parameters.Any(p => IsType(p.Type, timeSpan) || IsType(p.Type, dateTimeOffset));
-                if (!isTimeBased) return;
+                if (method.Parameters.Any(p => IsType(p.Type, scheduler))) {
+                    return;
+                }
 
-                var hasSchedulerOverload = observable.GetMembers(method.Name)
+                bool isTimeBased = TimeWithoutArguments.Contains(method.Name)
+                                   || method.Parameters.Any(p => IsType(p.Type, timeSpan) || IsType(p.Type, dateTimeOffset));
+                if (!isTimeBased) {
+                    return;
+                }
+
+                bool hasSchedulerOverload = observable.GetMembers(method.Name)
                     .OfType<IMethodSymbol>()
                     .Any(candidate => candidate.Parameters.Any(p => IsType(p.Type, scheduler)));
-                if (!hasSchedulerOverload) return;
+                if (!hasSchedulerOverload) {
+                    return;
+                }
 
                 operationContext.ReportDiagnostic(Diagnostic.Create(Rule, invocation.Syntax.GetLocation(), method.Name));
             }, OperationKind.Invocation);
         });
     }
 
-    private static bool IsType(ITypeSymbol type, INamedTypeSymbol? expected)
-        => expected is not null && SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, expected);
+    private static bool IsType(ITypeSymbol type, INamedTypeSymbol? expected) {
+        return expected is not null &&
+               SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, expected);
+    }
 }

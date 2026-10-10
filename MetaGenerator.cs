@@ -19,13 +19,13 @@ public class MetaGenerator : IIncrementalGenerator {
         context.RegisterPostInitializationOutput(ctx =>
             ctx.AddSource("RegisterMetaAttribute.g.cs", RegisterMetaAttribute));
 
-        var typesProvider = context.SyntaxProvider.ForAttributeWithMetadataName(
+        IncrementalValuesProvider<INamedTypeSymbol> typesProvider = context.SyntaxProvider.ForAttributeWithMetadataName(
             "GenUtilities.RegisterMetaAttribute",
             static (node, _) => node is ClassDeclarationSyntax or InterfaceDeclarationSyntax,
             static (ctx, _) => (INamedTypeSymbol)ctx.TargetSymbol);
 
         context.RegisterSourceOutput(typesProvider, static (spc, typeSymbol) => {
-            var isPartial = typeSymbol.DeclaringSyntaxReferences
+            bool isPartial = typeSymbol.DeclaringSyntaxReferences
                 .Select(r => r.GetSyntax())
                 .OfType<TypeDeclarationSyntax>()
                 .Any(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.PartialKeyword)));
@@ -44,9 +44,9 @@ public class MetaGenerator : IIncrementalGenerator {
     }
 
     private static string GeneratePartialSource(INamedTypeSymbol typeSymbol) {
-        var ns = typeSymbol.ContainingNamespace;
-        var typeName = typeSymbol.Name;
-        var typeKeyword = typeSymbol.TypeKind switch {
+        INamespaceSymbol ns = typeSymbol.ContainingNamespace;
+        string typeName = typeSymbol.Name;
+        string typeKeyword = typeSymbol.TypeKind switch {
             TypeKind.Interface => "interface",
             TypeKind.Class when typeSymbol.IsRecord => "record",
             TypeKind.Class => "class",
@@ -57,7 +57,7 @@ public class MetaGenerator : IIncrementalGenerator {
             return string.Empty;
         }
 
-        var methods =
+        string methods =
             $$"""
                   public static {{typeName}}? GetImpl(Godot.Node node) {
                       if (node is {{typeName}} takeDamage) return takeDamage;

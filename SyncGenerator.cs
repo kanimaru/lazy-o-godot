@@ -52,7 +52,7 @@ namespace {Namespace}
             "SyncSettingsAttribute.g.cs",
             SourceText.From(SettingsAttributeSourceCode, Encoding.UTF8)));
 
-        var propertyProvider = context.SyntaxProvider
+        IncrementalValuesProvider<MemberDeclarationSyntax> propertyProvider = context.SyntaxProvider
             .CreateSyntaxProvider(
                 (s, _) => s is ClassDeclarationSyntax,
                 (ctx, _) => GetDeclarationForSourceGen(ctx))
@@ -66,7 +66,7 @@ namespace {Namespace}
     private static (IEnumerable<MemberDeclarationSyntax>, bool attributeFound) GetDeclarationForSourceGen(
         GeneratorSyntaxContext context) {
         var classSyntax = (ClassDeclarationSyntax)context.Node;
-        var members = classSyntax.Members;
+        SyntaxList<MemberDeclarationSyntax> members = classSyntax.Members;
         var foundMembers = members.Select(member => IsBindAttributeOnMember(context.SemanticModel, member))
             .Where(syntax => syntax != null)
             .ToList();
@@ -76,15 +76,17 @@ namespace {Namespace}
 
     private static MemberDeclarationSyntax? IsBindAttributeOnMember(SemanticModel model,
         MemberDeclarationSyntax declarationSyntax) {
-        foreach (var attributeSyntax in declarationSyntax
+        foreach (AttributeSyntax attributeSyntax in declarationSyntax
                      .AttributeLists
                      .SelectMany(attributeListSyntax => attributeListSyntax.Attributes)) {
-            if (model.GetSymbolInfo(attributeSyntax).Symbol is not IMethodSymbol attributeSymbol)
+            if (model.GetSymbolInfo(attributeSyntax).Symbol is not IMethodSymbol attributeSymbol) {
                 continue;
+            }
 
-            var attributeName = attributeSymbol.ContainingType.ToDisplayString();
-            if (attributeName == $"{Namespace}.{AttributeName}")
+            string attributeName = attributeSymbol.ContainingType.ToDisplayString();
+            if (attributeName == $"{Namespace}.{AttributeName}") {
                 return declarationSyntax;
+            }
         }
 
         return null;
@@ -118,47 +120,61 @@ namespace {Namespace}
         ImmutableArray<MemberDeclarationSyntax> members) {
         Dictionary<string, ClassDefinition> classDefinitions = [];
 
-        foreach (var member in members)
+        foreach (MemberDeclarationSyntax member in members) {
             if (member.Parent is ClassDeclarationSyntax classDeclarationSyntax) {
-                var semanticModel = compilation.GetSemanticModel(classDeclarationSyntax.SyntaxTree);
-                if (semanticModel.GetDeclaredSymbol(classDeclarationSyntax) is not INamedTypeSymbol classSymbol)
+                SemanticModel semanticModel = compilation.GetSemanticModel(classDeclarationSyntax.SyntaxTree);
+                if (semanticModel.GetDeclaredSymbol(classDeclarationSyntax) is not INamedTypeSymbol classSymbol) {
                     continue;
+                }
 
-                var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
-                var className = classDeclarationSyntax.Identifier.Text;
-                var key = $"{namespaceName}.{className}";
-                if (!classDefinitions.ContainsKey(key)) classDefinitions[key] = new ClassDefinition();
+                string namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
+                string className = classDeclarationSyntax.Identifier.Text;
+                string key = $"{namespaceName}.{className}";
+                if (!classDefinitions.ContainsKey(key)) {
+                    classDefinitions[key] = new ClassDefinition();
+                }
 
-                var classDefinition = classDefinitions[key];
+                ClassDefinition classDefinition = classDefinitions[key];
                 classDefinition.ClassName = className;
                 classDefinition.NamespaceName = namespaceName;
 
-                var syncSettingsAttribute = classSymbol.GetAttributes()
+                AttributeData? syncSettingsAttribute = classSymbol.GetAttributes()
                     .FirstOrDefault(attr => attr.AttributeClass?.ToDisplayString() == $"{Namespace}.{SettingsAttributeName}");
 
                 if (syncSettingsAttribute != null) {
                     var settings = new SyncSettingsDefinition();
                     classDefinition.Settings = settings;
 
-                    foreach (var arg in syncSettingsAttribute.NamedArguments) {
-                        var value = arg.Value;
-                        if (value.IsNull) continue;
+                    foreach (KeyValuePair<string, TypedConstant> arg in syncSettingsAttribute.NamedArguments) {
+                        TypedConstant value = arg.Value;
+                        if (value.IsNull) {
+                            continue;
+                        }
 
                         switch (arg.Key) {
                             case "DeltaInterval":
-                                if (value.Value is float f) settings.DeltaInterval = f;
+                                if (value.Value is float f) {
+                                    settings.DeltaInterval = f;
+                                }
+
                                 break;
                             case "ReplicationInterval":
-                                if (value.Value is float f2) settings.ReplicationInterval = f2;
+                                if (value.Value is float f2) {
+                                    settings.ReplicationInterval = f2;
+                                }
+
                                 break;
                             case "PublicVisibility":
-                                if (value.Value is bool b) settings.PublicVisibility = b;
+                                if (value.Value is bool b) {
+                                    settings.PublicVisibility = b;
+                                }
+
                                 break;
                         }
                     }
 
                     if (syncSettingsAttribute.ApplicationSyntaxReference?.GetSyntax() is AttributeSyntax attributeSyntax) {
-                        var argument = attributeSyntax.ArgumentList?.Arguments
+                        AttributeArgumentSyntax? argument = attributeSyntax.ArgumentList?.Arguments
                             .FirstOrDefault(a => a.NameEquals?.Name.Identifier.Text == "VisibilityUpdateMode");
                         if (argument != null) {
                             settings.VisibilityUpdateMode = argument.Expression.ToString();
@@ -167,10 +183,12 @@ namespace {Namespace}
                 }
 
                 if (member is FieldDeclarationSyntax field) {
-                    var variable = field.Declaration.Variables[0];
+                    VariableDeclaratorSyntax variable = field.Declaration.Variables[0];
 
                     // Get the Type of the field.
-                    if (semanticModel.GetDeclaredSymbol(variable) is not IFieldSymbol fieldSymbol) continue;
+                    if (semanticModel.GetDeclaredSymbol(variable) is not IFieldSymbol fieldSymbol) {
+                        continue;
+                    }
 
                     var memberDefinition = new MemberDefinition {
                         Name = fieldSymbol.Name,
@@ -180,7 +198,7 @@ namespace {Namespace}
                     classDefinition.UsingNamespaceName.Add(fieldSymbol.Type.ContainingNamespace.ToDisplayString());
                     // Check if the field has the [Sync] attribute and read the properties from the attribute.
                     if (fieldSymbol.GetAttributes().Any(attr => attr.AttributeClass?.Name == "Sync")) {
-                        var syncAttribute = fieldSymbol.GetAttributes()
+                        AttributeData syncAttribute = fieldSymbol.GetAttributes()
                             .First(attr => attr.AttributeClass?.Name == "Sync");
                         memberDefinition.Spawn = syncAttribute.NamedArguments
                             .Any(pair => pair.Key == "Spawn" && (bool)(pair.Value.Value ?? false));
@@ -188,7 +206,7 @@ namespace {Namespace}
                             .Any(pair => pair.Key == "Logging" && (bool)(pair.Value.Value ?? false));
                         memberDefinition.ReplicationMode = string.Empty;
                         if (syncAttribute.ApplicationSyntaxReference?.GetSyntax() is AttributeSyntax attributeSyntax) {
-                            var argument = attributeSyntax.ArgumentList?.Arguments
+                            AttributeArgumentSyntax? argument = attributeSyntax.ArgumentList?.Arguments
                                 .FirstOrDefault(a => a.NameEquals?.Name.Identifier.Text == "ReplicationMode");
                             if (argument != null) {
                                 memberDefinition.ReplicationMode = argument.Expression.ToString();
@@ -196,7 +214,9 @@ namespace {Namespace}
                         }
                     }
                 } else if (member is PropertyDeclarationSyntax property) {
-                    if (semanticModel.GetDeclaredSymbol(property) is not IPropertySymbol propertySymbol) continue;
+                    if (semanticModel.GetDeclaredSymbol(property) is not IPropertySymbol propertySymbol) {
+                        continue;
+                    }
 
                     var memberDefinition = new MemberDefinition {
                         Name = propertySymbol.Name,
@@ -206,8 +226,11 @@ namespace {Namespace}
                     classDefinition.UsingNamespaceName.Add(propertySymbol.Type.ContainingNamespace.ToDisplayString());
                 }
             }
+        }
 
-        foreach (var definition in classDefinitions.Values) GenerateClass(context, definition);
+        foreach (ClassDefinition definition in classDefinitions.Values) {
+            GenerateClass(context, definition);
+        }
     }
 
     private static void GenerateClass(SourceProductionContext context, ClassDefinition definition) {
@@ -217,7 +240,7 @@ namespace {Namespace}
         var eventCode = new StringBuilder();
         var syncSettingsCode = new StringBuilder();
         if (definition.Settings != null) {
-            var settings = definition.Settings;
+            SyncSettingsDefinition settings = definition.Settings;
 
             if (settings.ReplicationInterval.HasValue) {
                 syncSettingsCode.AppendLine(
@@ -236,9 +259,9 @@ namespace {Namespace}
                 syncSettingsCode.AppendLine($"                            _synchronizer.VisibilityUpdateMode = {settings.VisibilityUpdateMode};");
             }
         }
-        foreach (var memberDefinition in definition.MemberDefinitions) {
-            var fieldName = memberDefinition.Name;
-            var propertyName = fieldName.TrimStart('_');
+        foreach (MemberDefinition memberDefinition in definition.MemberDefinitions) {
+            string fieldName = memberDefinition.Name;
+            string propertyName = fieldName.TrimStart('_');
             propertyName = propertyName.Substring(0, 1).ToUpper() + propertyName.Substring(1);
 
             // Sadly not works because of racing conditions.
@@ -293,40 +316,43 @@ namespace {Namespace}
         }
 
         var usingCode = new StringBuilder();
-        foreach (var namespaceName in definition.UsingNamespaceName) {
-            if (namespaceName == "Godot") continue;
+        foreach (string namespaceName in definition.UsingNamespaceName) {
+            if (namespaceName == "Godot") {
+                continue;
+            }
+
             usingCode.AppendLine($"using {namespaceName};");
         }
 
         // Build up the source code
-        var code = $$"""
-                      // <auto-generated/>
-                      #nullable enable
+        string code = $$"""
+                        // <auto-generated/>
+                        #nullable enable
 
-                      using Godot;
-                      {{usingCode}}
+                        using Godot;
+                        {{usingCode}}
 
-                      namespace {{definition.NamespaceName}};
+                        namespace {{definition.NamespaceName}};
 
-                      public partial class {{definition.ClassName}}
-                      {
-                         protected SceneReplicationConfig _syncConfig = new SceneReplicationConfig();
-                         protected MultiplayerSynchronizer _synchronizer = new MultiplayerSynchronizer();
-                         {{eventCode}}
+                        public partial class {{definition.ClassName}}
+                        {
+                           protected SceneReplicationConfig _syncConfig = new SceneReplicationConfig();
+                           protected MultiplayerSynchronizer _synchronizer = new MultiplayerSynchronizer();
+                           {{eventCode}}
 
-                         private void StartSync() {
-                             _synchronizer.SetMultiplayerAuthority(GetMultiplayerAuthority());
-                             _synchronizer.Name = GetType().Name;
-                             {{syncSettingsCode}}
-                             {{memberCode}}
-                             _synchronizer.SetReplicationConfig(_syncConfig);
-                             AddChild(_synchronizer);
-                         }
-                         
-                         {{methodCode}}
-                      }
+                           private void StartSync() {
+                               _synchronizer.SetMultiplayerAuthority(GetMultiplayerAuthority());
+                               _synchronizer.Name = GetType().Name;
+                               {{syncSettingsCode}}
+                               {{memberCode}}
+                               _synchronizer.SetReplicationConfig(_syncConfig);
+                               AddChild(_synchronizer);
+                           }
+                           
+                           {{methodCode}}
+                        }
 
-                      """;
+                        """;
         context.AddSource($"{definition.ClassName}.Sync.g.cs", SourceText.From(code, Encoding.UTF8));
     }
 }

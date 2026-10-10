@@ -49,7 +49,7 @@ public class AutowireGenerator : IIncrementalGenerator {
                 "AutowireAttribute.g.cs",
                 SourceText.From(AttributeSourceCode, Encoding.UTF8)));
 
-        var propertyProvider = context.SyntaxProvider
+        IncrementalValuesProvider<PropertyDeclarationSyntax> propertyProvider = context.SyntaxProvider
             .CreateSyntaxProvider(
                 static (node, _) => node is ClassDeclarationSyntax,
                 static (ctx, _) => GetAutowireMembers(ctx))
@@ -64,24 +64,26 @@ public class AutowireGenerator : IIncrementalGenerator {
     private static (IEnumerable<PropertyDeclarationSyntax> members, bool attributeFound)
         GetAutowireMembers(GeneratorSyntaxContext context) {
         var classSyntax = (ClassDeclarationSyntax)context.Node;
-        var members = classSyntax.Members;
+        SyntaxList<MemberDeclarationSyntax> members = classSyntax.Members;
 
         var autowiredProperties = new List<PropertyDeclarationSyntax>();
 
-        foreach (var member in members.OfType<PropertyDeclarationSyntax>()) {
-            if (HasAutowireAttribute(context.SemanticModel, member))
+        foreach (PropertyDeclarationSyntax member in members.OfType<PropertyDeclarationSyntax>()) {
+            if (HasAutowireAttribute(context.SemanticModel, member)) {
                 autowiredProperties.Add(member);
+            }
         }
 
         return (autowiredProperties, autowiredProperties.Count > 0);
     }
 
     private static bool HasAutowireAttribute(SemanticModel model, PropertyDeclarationSyntax propertySyntax) {
-        foreach (var attributeSyntax in propertySyntax.AttributeLists.SelectMany(a => a.Attributes)) {
-            if (model.GetSymbolInfo(attributeSyntax).Symbol is not IMethodSymbol attributeSymbol)
+        foreach (AttributeSyntax attributeSyntax in propertySyntax.AttributeLists.SelectMany(a => a.Attributes)) {
+            if (model.GetSymbolInfo(attributeSyntax).Symbol is not IMethodSymbol attributeSymbol) {
                 continue;
+            }
 
-            var attributeTypeName = attributeSymbol.ContainingType.ToDisplayString();
+            string attributeTypeName = attributeSymbol.ContainingType.ToDisplayString();
             if (attributeTypeName == $"{Namespace}.{AttributeName}Attribute" ||
                 attributeTypeName == $"{Namespace}.{AttributeName}") {
                 return true;
@@ -111,22 +113,25 @@ public class AutowireGenerator : IIncrementalGenerator {
         ImmutableArray<PropertyDeclarationSyntax> properties) {
         var classes = new Dictionary<string, ClassDefinition>();
 
-        foreach (var propertySyntax in properties) {
-            if (propertySyntax.Parent is not ClassDeclarationSyntax classSyntax)
+        foreach (PropertyDeclarationSyntax propertySyntax in properties) {
+            if (propertySyntax.Parent is not ClassDeclarationSyntax classSyntax) {
                 continue;
+            }
 
-            var semanticModel = compilation.GetSemanticModel(classSyntax.SyntaxTree);
-            if (semanticModel.GetDeclaredSymbol(classSyntax) is not INamedTypeSymbol classSymbol)
+            SemanticModel semanticModel = compilation.GetSemanticModel(classSyntax.SyntaxTree);
+            if (semanticModel.GetDeclaredSymbol(classSyntax) is not INamedTypeSymbol classSymbol) {
                 continue;
+            }
 
-            if (semanticModel.GetDeclaredSymbol(propertySyntax) is not IPropertySymbol propertySymbol)
+            if (semanticModel.GetDeclaredSymbol(propertySyntax) is not IPropertySymbol propertySymbol) {
                 continue;
+            }
 
-            var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
-            var className = classSymbol.Name;
-            var classKey = $"{namespaceName}.{className}";
+            string namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
+            string className = classSymbol.Name;
+            string classKey = $"{namespaceName}.{className}";
 
-            if (!classes.TryGetValue(classKey, out var classDef)) {
+            if (!classes.TryGetValue(classKey, out ClassDefinition? classDef)) {
                 classDef = new ClassDefinition {
                     NamespaceName = namespaceName,
                     ClassName = className
@@ -134,29 +139,30 @@ public class AutowireGenerator : IIncrementalGenerator {
                 classes.Add(classKey, classDef);
             }
 
-            var autowireAttribute = propertySymbol
+            AttributeData autowireAttribute = propertySymbol
                 .GetAttributes()
                 .First(attr =>
                     attr.AttributeClass?.ToDisplayString() == $"{Namespace}.{AttributeName}Attribute" ||
                     attr.AttributeClass?.ToDisplayString() == $"{Namespace}.{AttributeName}");
 
             // Read constructor arguments: Autowire(nameof(_title), nameof(Label.Text))
-            var nodeFieldName = autowireAttribute.ConstructorArguments.Length > 0
+            string nodeFieldName = autowireAttribute.ConstructorArguments.Length > 0
                 ? autowireAttribute.ConstructorArguments[0].Value as string ?? ""
                 : "";
 
-            var nodeMemberName = autowireAttribute.ConstructorArguments.Length > 1
+            string nodeMemberName = autowireAttribute.ConstructorArguments.Length > 1
                 ? autowireAttribute.ConstructorArguments[1].Value as string ?? ""
                 : "";
 
-            if (string.IsNullOrWhiteSpace(nodeFieldName) || string.IsNullOrWhiteSpace(nodeMemberName))
+            if (string.IsNullOrWhiteSpace(nodeFieldName) || string.IsNullOrWhiteSpace(nodeMemberName)) {
                 continue;
+            }
 
-            var propertyName = propertySymbol.Name;
-            var propertyType = propertySymbol.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            string propertyName = propertySymbol.Name;
+            string propertyType = propertySymbol.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
             // Backing value field: _titleVal for property `Title`.
-            var backingValueFieldName = $"_{char.ToLowerInvariant(propertyName[0])}{propertyName.Substring(1)}Val";
+            string backingValueFieldName = $"_{char.ToLowerInvariant(propertyName[0])}{propertyName.Substring(1)}Val";
 
             classDef.Properties.Add(new PropertyDefinition {
                 PropertyName = propertyName,
@@ -167,7 +173,7 @@ public class AutowireGenerator : IIncrementalGenerator {
             });
         }
 
-        foreach (var classDef in classes.Values) {
+        foreach (ClassDefinition classDef in classes.Values) {
             GenerateClass(context, classDef);
         }
     }
@@ -177,7 +183,7 @@ public class AutowireGenerator : IIncrementalGenerator {
         var methodsBuilder = new StringBuilder();
         var refreshBodyBuilder = new StringBuilder();
 
-        foreach (var prop in def.Properties) {
+        foreach (PropertyDefinition prop in def.Properties) {
             // Example:
             // private string _titleVal = "";
             fieldsBuilder.AppendLine(
@@ -207,27 +213,28 @@ public class AutowireGenerator : IIncrementalGenerator {
                 $"            Update{prop.PropertyName}({prop.BackingValueFieldName});");
         }
 
-        if (def.Properties.Count == 0)
+        if (def.Properties.Count == 0) {
             return;
+        }
 
-        var source = $$"""
-                       // <auto-generated/>
-                       #nullable enable
+        string source = $$"""
+                          // <auto-generated/>
+                          #nullable enable
 
-                       namespace {{def.NamespaceName}};
+                          namespace {{def.NamespaceName}};
 
-                       public partial class {{def.ClassName}}
-                       {
-                       {{fieldsBuilder}}
+                          public partial class {{def.ClassName}}
+                          {
+                          {{fieldsBuilder}}
 
-                               private void RefreshAllComponents()
-                               {
-                       {{refreshBodyBuilder}}
-                               }
+                                  private void RefreshAllComponents()
+                                  {
+                          {{refreshBodyBuilder}}
+                                  }
 
-                       {{methodsBuilder}}
-                       }
-                       """;
+                          {{methodsBuilder}}
+                          }
+                          """;
 
         context.AddSource($"{def.ClassName}.Autowire.g.cs", SourceText.From(source, Encoding.UTF8));
     }

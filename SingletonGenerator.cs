@@ -19,13 +19,13 @@ public class SingletonGenerator : IIncrementalGenerator {
         context.RegisterPostInitializationOutput(ctx =>
             ctx.AddSource("SingletonAttribute.g.cs", SingletonAttribute));
 
-        var typesProvider = context.SyntaxProvider.ForAttributeWithMetadataName(
+        IncrementalValuesProvider<INamedTypeSymbol> typesProvider = context.SyntaxProvider.ForAttributeWithMetadataName(
             "GenUtilities.SingletonAttribute",
             static (node, _) => node is ClassDeclarationSyntax,
             static (ctx, _) => (INamedTypeSymbol)ctx.TargetSymbol);
 
         context.RegisterSourceOutput(typesProvider, static (spc, typeSymbol) => {
-            var isPartial = typeSymbol.DeclaringSyntaxReferences
+            bool isPartial = typeSymbol.DeclaringSyntaxReferences
                 .Select(r => r.GetSyntax())
                 .OfType<TypeDeclarationSyntax>()
                 .Any(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.PartialKeyword)));
@@ -44,10 +44,10 @@ public class SingletonGenerator : IIncrementalGenerator {
     }
 
     private static string GeneratePartialSource(INamedTypeSymbol typeSymbol) {
-        var ns = typeSymbol.ContainingNamespace;
-        var typeName = typeSymbol.Name;
+        INamespaceSymbol ns = typeSymbol.ContainingNamespace;
+        string typeName = typeSymbol.Name;
 
-        var methods =
+        string methods =
             $$"""
               public static {{typeName}} GetOrCreate() {
                   if (_instance != null) return _instance;
