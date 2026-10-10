@@ -13,260 +13,260 @@ namespace GenUtilities;
 
 [Generator]
 public class BindGenerator : IIncrementalGenerator {
-	public void Initialize(IncrementalGeneratorInitializationContext context) {
-		var classProvider = context.SyntaxProvider
-			.CreateSyntaxProvider(
-				(s, _) => s is ClassDeclarationSyntax,
-				(ctx, _) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node) as INamedTypeSymbol)
-			.Where(symbol => symbol is not null)
-			.Collect()
-			.SelectMany((symbols, _) => symbols.Distinct(SymbolEqualityComparer.Default).Cast<INamedTypeSymbol>());
+    public void Initialize(IncrementalGeneratorInitializationContext context) {
+        var classProvider = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                (s, _) => s is ClassDeclarationSyntax,
+                (ctx, _) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node) as INamedTypeSymbol)
+            .Where(symbol => symbol is not null)
+            .Collect()
+            .SelectMany((symbols, _) => symbols.Distinct(SymbolEqualityComparer.Default).Cast<INamedTypeSymbol>());
 
-		var sceneFilesProvider = context.AdditionalTextsProvider
-			.Where(file => file.Path.EndsWith(".tscn", System.StringComparison.OrdinalIgnoreCase));
+        var sceneFilesProvider = context.AdditionalTextsProvider
+            .Where(file => file.Path.EndsWith(".tscn", System.StringComparison.OrdinalIgnoreCase));
 
-		var classesAndScenesProvider = classProvider.Combine(sceneFilesProvider.Collect());
+        var classesAndScenesProvider = classProvider.Combine(sceneFilesProvider.Collect());
 
-		var finalProvider = classesAndScenesProvider.Combine(context.CompilationProvider);
+        var finalProvider = classesAndScenesProvider.Combine(context.CompilationProvider);
 
-		context.RegisterSourceOutput(finalProvider, (spc, source) => {
-			var classAndScenes = source.Left;
-			var compilation = source.Right;
-			var classSymbol = classAndScenes.Left;
-			var sceneFiles = classAndScenes.Right;
+        context.RegisterSourceOutput(finalProvider, (spc, source) => {
+            var classAndScenes = source.Left;
+            var compilation = source.Right;
+            var classSymbol = classAndScenes.Left;
+            var sceneFiles = classAndScenes.Right;
 
-			var sceneFile = sceneFiles.FirstOrDefault(f =>
-				string.Equals(Path.GetFileNameWithoutExtension(f.Path), classSymbol!.Name, StringComparison.CurrentCultureIgnoreCase));
+            var sceneFile = sceneFiles.FirstOrDefault(f =>
+                string.Equals(Path.GetFileNameWithoutExtension(f.Path), classSymbol!.Name, StringComparison.CurrentCultureIgnoreCase));
 
-			if (sceneFile is not null) {
-				GenerateCode(spc, compilation, classSymbol!, sceneFile, sceneFiles);
-			}
-		});
-	}
+            if (sceneFile is not null) {
+                GenerateCode(spc, compilation, classSymbol!, sceneFile, sceneFiles);
+            }
+        });
+    }
 
-	private static IEnumerable<INamedTypeSymbol> GetAllTypes(INamespaceSymbol root) {
-		foreach (var namespaceOrType in root.GetMembers())
-			if (namespaceOrType is INamespaceSymbol subNs) {
-				foreach (var type in GetAllTypes(subNs)) yield return type;
-			} else if (namespaceOrType is INamedTypeSymbol type) {
-				yield return type;
-			}
-	}
-	
-	private class ClassDefinition {
-		public string NamespaceName { get; set; } = "";
-		public string ClassName { get; set; } = "";
-		public HashSet<string> UsingNamespaceName { get; set; } = [];
+    private static IEnumerable<INamedTypeSymbol> GetAllTypes(INamespaceSymbol root) {
+        foreach (var namespaceOrType in root.GetMembers())
+            if (namespaceOrType is INamespaceSymbol subNs) {
+                foreach (var type in GetAllTypes(subNs)) yield return type;
+            } else if (namespaceOrType is INamedTypeSymbol type) {
+                yield return type;
+            }
+    }
 
-		public List<MemberDefinition> MemberDefinitions { get; } = [];
-	}
+    private class ClassDefinition {
+        public string NamespaceName { get; set; } = "";
+        public string ClassName { get; set; } = "";
+        public HashSet<string> UsingNamespaceName { get; set; } = [];
 
-	private class MemberDefinition {
-		public string Type { get; set; } = "";
-		public string Name { get; set; } = "";
-		public string NodeName { get; set; } = "";
-	}
+        public List<MemberDefinition> MemberDefinitions { get; } = [];
+    }
 
-	private void GenerateCode(SourceProductionContext context, Compilation compilation, INamedTypeSymbol classSymbol,
-		AdditionalText sceneFile, ImmutableArray<AdditionalText> sceneFiles) {
-		var sceneContent = sceneFile.GetText(context.CancellationToken)?.ToString();
-		if (sceneContent == null || string.IsNullOrEmpty(sceneContent)) return;
+    private class MemberDefinition {
+        public string Type { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string NodeName { get; set; } = "";
+    }
 
-		var scriptResources = new Dictionary<string, string>();
-		var sceneResources = new Dictionary<string, string>();
-		var extResourceRegex =
-			new Regex(
-				"""^\[ext_resource type="([^"]+)"(?: uid="[^"]+")? path="res:\/\/([^"]+)" id="([^"]+)"\]""",
-				RegexOptions.Multiline);
+    private void GenerateCode(SourceProductionContext context, Compilation compilation, INamedTypeSymbol classSymbol,
+        AdditionalText sceneFile, ImmutableArray<AdditionalText> sceneFiles) {
+        var sceneContent = sceneFile.GetText(context.CancellationToken)?.ToString();
+        if (sceneContent == null || string.IsNullOrEmpty(sceneContent)) return;
 
-		foreach (Match match in extResourceRegex.Matches(sceneContent)) {
-			var type = match.Groups[1].Value;
-			var path = match.Groups[2].Value;
-			var id = match.Groups[3].Value;
+        var scriptResources = new Dictionary<string, string>();
+        var sceneResources = new Dictionary<string, string>();
+        var extResourceRegex =
+            new Regex(
+                """^\[ext_resource type="([^"]+)"(?: uid="[^"]+")? path="res:\/\/([^"]+)" id="([^"]+)"\]""",
+                RegexOptions.Multiline);
 
-			if (type == "Script" && path.EndsWith(".cs"))
-				scriptResources[id] = path;
-			else if (type == "PackedScene" && path.EndsWith(".tscn"))
-				sceneResources[id] = path;
-		}
+        foreach (Match match in extResourceRegex.Matches(sceneContent)) {
+            var type = match.Groups[1].Value;
+            var path = match.Groups[2].Value;
+            var id = match.Groups[3].Value;
 
-		var allTypes = GetAllTypes(compilation.GlobalNamespace).ToLookup(t => t.Name);
+            if (type == "Script" && path.EndsWith(".cs"))
+                scriptResources[id] = path;
+            else if (type == "PackedScene" && path.EndsWith(".tscn"))
+                sceneResources[id] = path;
+        }
 
-		var classDefinition = new ClassDefinition {
-			ClassName = classSymbol.Name,
-			NamespaceName = classSymbol.ContainingNamespace.ToDisplayString(),
-		};
-		classDefinition.UsingNamespaceName.Add("Godot");
+        var allTypes = GetAllTypes(compilation.GlobalNamespace).ToLookup(t => t.Name);
 
-		var contentLines =
-			new List<string>(sceneContent.Split(['\r', '\n'], System.StringSplitOptions.RemoveEmptyEntries));
-		var nodeBlocks = new List<string>();
-		var currentNodeBlock = new StringBuilder();
-		foreach (var line in contentLines) {
-			if (line.StartsWith("[")) {
-				if (currentNodeBlock.Length > 0) nodeBlocks.Add(currentNodeBlock.ToString());
-				currentNodeBlock.Clear();
-			}
+        var classDefinition = new ClassDefinition {
+            ClassName = classSymbol.Name,
+            NamespaceName = classSymbol.ContainingNamespace.ToDisplayString(),
+        };
+        classDefinition.UsingNamespaceName.Add("Godot");
 
-			currentNodeBlock.AppendLine(line);
-		}
+        var contentLines =
+            new List<string>(sceneContent.Split(['\r', '\n'], System.StringSplitOptions.RemoveEmptyEntries));
+        var nodeBlocks = new List<string>();
+        var currentNodeBlock = new StringBuilder();
+        foreach (var line in contentLines) {
+            if (line.StartsWith("[")) {
+                if (currentNodeBlock.Length > 0) nodeBlocks.Add(currentNodeBlock.ToString());
+                currentNodeBlock.Clear();
+            }
 
-		if (currentNodeBlock.Length > 0) nodeBlocks.Add(currentNodeBlock.ToString());
+            currentNodeBlock.AppendLine(line);
+        }
 
-		foreach (var block in nodeBlocks) {
-			if (!block.StartsWith("[node ") || !block.Contains("unique_name_in_owner = true")) continue;
+        if (currentNodeBlock.Length > 0) nodeBlocks.Add(currentNodeBlock.ToString());
 
-			var nameMatch = Regex.Match(block, @"name\s*=\s*""([^""]+)""");
-			if (!nameMatch.Success) continue;
-			var nodeName = nameMatch.Groups[1].Value;
+        foreach (var block in nodeBlocks) {
+            if (!block.StartsWith("[node ") || !block.Contains("unique_name_in_owner = true")) continue;
 
-			string? nodeType = null;
+            var nameMatch = Regex.Match(block, @"name\s*=\s*""([^""]+)""");
+            if (!nameMatch.Success) continue;
+            var nodeName = nameMatch.Groups[1].Value;
 
-			var instanceMatch = Regex.Match(block, @"instance\s*=\s*ExtResource\(""([^""]+)""\)");
-			if (instanceMatch.Success) // It's an instanced scene
-			{
-				var instanceId = instanceMatch.Groups[1].Value;
-				// A script set on the instance itself replaces the instanced scene's root script.
-				var overrideMatch = Regex.Match(block, @"^script\s*=\s*ExtResource\(""([^""]+)""\)", RegexOptions.Multiline);
-				if (overrideMatch.Success && scriptResources.TryGetValue(overrideMatch.Groups[1].Value, out var overridePath)) {
-					var overrideSymbol = allTypes[Path.GetFileNameWithoutExtension(overridePath)].FirstOrDefault();
-					if (overrideSymbol != null) {
-						nodeType = overrideSymbol.ToDisplayString();
-						if (!overrideSymbol.ContainingNamespace.IsGlobalNamespace)
-							classDefinition.UsingNamespaceName.Add(overrideSymbol.ContainingNamespace.ToDisplayString());
-					}
-				}
+            string? nodeType = null;
 
-				if (nodeType == null && sceneResources.TryGetValue(instanceId, out var scenePath)) {
-					var sceneClassName = Path.GetFileNameWithoutExtension(scenePath);
-					var typeSymbol = allTypes[sceneClassName].FirstOrDefault();
-					if (typeSymbol != null) {
-						nodeType = typeSymbol.ToDisplayString();
-						if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
-							classDefinition.UsingNamespaceName.Add(
-								typeSymbol.ContainingNamespace.ToDisplayString());
-					} else {
-						// No C# class backs the instanced scene by its file name — inspect
-						// that scene's root (owner) node: prefer the C# class attached via its
-						// script, otherwise fall back to the Godot type, e.g. "Control".
-						nodeType = ResolveInstancedSceneRootType(context, compilation, sceneFiles, scenePath,
-							allTypes, classDefinition);
-					}
-				}
-			} else // It's a regular node
-			{
-				var typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
-				if (!typeMatch.Success) continue; // Regular nodes must have a type.
+            var instanceMatch = Regex.Match(block, @"instance\s*=\s*ExtResource\(""([^""]+)""\)");
+            if (instanceMatch.Success) // It's an instanced scene
+            {
+                var instanceId = instanceMatch.Groups[1].Value;
+                // A script set on the instance itself replaces the instanced scene's root script.
+                var overrideMatch = Regex.Match(block, @"^script\s*=\s*ExtResource\(""([^""]+)""\)", RegexOptions.Multiline);
+                if (overrideMatch.Success && scriptResources.TryGetValue(overrideMatch.Groups[1].Value, out var overridePath)) {
+                    var overrideSymbol = allTypes[Path.GetFileNameWithoutExtension(overridePath)].FirstOrDefault();
+                    if (overrideSymbol != null) {
+                        nodeType = overrideSymbol.ToDisplayString();
+                        if (!overrideSymbol.ContainingNamespace.IsGlobalNamespace)
+                            classDefinition.UsingNamespaceName.Add(overrideSymbol.ContainingNamespace.ToDisplayString());
+                    }
+                }
 
-				nodeType = SceneRoot.GodotTypeName(compilation, typeMatch.Groups[1].Value); // Default to the node's type
+                if (nodeType == null && sceneResources.TryGetValue(instanceId, out var scenePath)) {
+                    var sceneClassName = Path.GetFileNameWithoutExtension(scenePath);
+                    var typeSymbol = allTypes[sceneClassName].FirstOrDefault();
+                    if (typeSymbol != null) {
+                        nodeType = typeSymbol.ToDisplayString();
+                        if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
+                            classDefinition.UsingNamespaceName.Add(
+                                typeSymbol.ContainingNamespace.ToDisplayString());
+                    } else {
+                        // No C# class backs the instanced scene by its file name — inspect
+                        // that scene's root (owner) node: prefer the C# class attached via its
+                        // script, otherwise fall back to the Godot type, e.g. "Control".
+                        nodeType = ResolveInstancedSceneRootType(context, compilation, sceneFiles, scenePath,
+                            allTypes, classDefinition);
+                    }
+                }
+            } else // It's a regular node
+            {
+                var typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
+                if (!typeMatch.Success) continue; // Regular nodes must have a type.
 
-				var scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
-				if (scriptMatch.Success) // Check for a script to get a more specific type
-				{
-					var scriptId = scriptMatch.Groups[1].Value;
-					if (scriptResources.TryGetValue(scriptId, out var scriptPath)) {
-						var scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
-						var typeSymbol = allTypes[scriptClassName].FirstOrDefault();
-						if (typeSymbol != null) {
-							nodeType = typeSymbol.ToDisplayString(); // Override with a script class
-							if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
-								classDefinition.UsingNamespaceName.Add(
-									typeSymbol.ContainingNamespace.ToDisplayString());
-						}
-					}
-				}
-			}
+                nodeType = SceneRoot.GodotTypeName(compilation, typeMatch.Groups[1].Value); // Default to the node's type
 
-			if (string.IsNullOrEmpty(nodeName) || string.IsNullOrEmpty(nodeType)) continue;
+                var scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
+                if (scriptMatch.Success) // Check for a script to get a more specific type
+                {
+                    var scriptId = scriptMatch.Groups[1].Value;
+                    if (scriptResources.TryGetValue(scriptId, out var scriptPath)) {
+                        var scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
+                        var typeSymbol = allTypes[scriptClassName].FirstOrDefault();
+                        if (typeSymbol != null) {
+                            nodeType = typeSymbol.ToDisplayString(); // Override with a script class
+                            if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
+                                classDefinition.UsingNamespaceName.Add(
+                                    typeSymbol.ContainingNamespace.ToDisplayString());
+                        }
+                    }
+                }
+            }
 
-			var memberName = $"_{char.ToLowerInvariant(nodeName[0])}{nodeName.Substring(1)}";
-			classDefinition.MemberDefinitions.Add(new MemberDefinition {
-				Name = memberName,
-				Type = nodeType!,
-				NodeName = nodeName,
-			});
-		}
+            if (string.IsNullOrEmpty(nodeName) || string.IsNullOrEmpty(nodeType)) continue;
+
+            var memberName = $"_{char.ToLowerInvariant(nodeName[0])}{nodeName.Substring(1)}";
+            classDefinition.MemberDefinitions.Add(new MemberDefinition {
+                Name = memberName,
+                Type = nodeType!,
+                NodeName = nodeName,
+            });
+        }
 
 
-		if (classDefinition.MemberDefinitions.Count > 0) GenerateClass(context, classDefinition);
-	}
+        if (classDefinition.MemberDefinitions.Count > 0) GenerateClass(context, classDefinition);
+    }
 
-	private static string? ResolveInstancedSceneRootType(SourceProductionContext context, Compilation compilation,
-		ImmutableArray<AdditionalText> sceneFiles, string scenePath,
-		ILookup<string, INamedTypeSymbol> allTypes, ClassDefinition classDefinition) {
-		var normalized = scenePath.Replace('\\', '/');
-		var target = sceneFiles.FirstOrDefault(f =>
-			f.Path.Replace('\\', '/').EndsWith(normalized, StringComparison.OrdinalIgnoreCase));
-		var content = target?.GetText(context.CancellationToken)?.ToString();
-		if (string.IsNullOrEmpty(content)) return null;
+    private static string? ResolveInstancedSceneRootType(SourceProductionContext context, Compilation compilation,
+        ImmutableArray<AdditionalText> sceneFiles, string scenePath,
+        ILookup<string, INamedTypeSymbol> allTypes, ClassDefinition classDefinition) {
+        var normalized = scenePath.Replace('\\', '/');
+        var target = sceneFiles.FirstOrDefault(f =>
+            f.Path.Replace('\\', '/').EndsWith(normalized, StringComparison.OrdinalIgnoreCase));
+        var content = target?.GetText(context.CancellationToken)?.ToString();
+        if (string.IsNullOrEmpty(content)) return null;
 
-		// Collect the script ext_resources declared by the instanced scene so we can
-		// map a script id referenced by the root node back to its C# class.
-		var scriptResources = new Dictionary<string, string>();
-		var extResourceRegex =
-			new Regex(
-				"""^\[ext_resource type="([^"]+)"(?: uid="[^"]+")? path="res:\/\/([^"]+)" id="([^"]+)"\]""",
-				RegexOptions.Multiline);
-		foreach (Match match in extResourceRegex.Matches(content!)) {
-			if (match.Groups[1].Value == "Script" && match.Groups[2].Value.EndsWith(".cs"))
-				scriptResources[match.Groups[3].Value] = match.Groups[2].Value;
-		}
+        // Collect the script ext_resources declared by the instanced scene so we can
+        // map a script id referenced by the root node back to its C# class.
+        var scriptResources = new Dictionary<string, string>();
+        var extResourceRegex =
+            new Regex(
+                """^\[ext_resource type="([^"]+)"(?: uid="[^"]+")? path="res:\/\/([^"]+)" id="([^"]+)"\]""",
+                RegexOptions.Multiline);
+        foreach (Match match in extResourceRegex.Matches(content!)) {
+            if (match.Groups[1].Value == "Script" && match.Groups[2].Value.EndsWith(".cs"))
+                scriptResources[match.Groups[3].Value] = match.Groups[2].Value;
+        }
 
-		// The root (owner) node is the first [node ...] block; child nodes carry a parent= attribute.
-		// Capture the whole block because the script assignment lives on a line after the header.
-		var rootBlock = new StringBuilder();
-		var inRoot = false;
-		foreach (var line in content!.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {
-			if (line.StartsWith("[")) {
-				if (line.StartsWith("[node ")) {
-					if (inRoot) break; // Reached the next node — the root block is complete.
-					inRoot = true;
-				} else if (inRoot) {
-					break; // A different section after the root node ends the block.
-				}
-			}
+        // The root (owner) node is the first [node ...] block; child nodes carry a parent= attribute.
+        // Capture the whole block because the script assignment lives on a line after the header.
+        var rootBlock = new StringBuilder();
+        var inRoot = false;
+        foreach (var line in content!.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {
+            if (line.StartsWith("[")) {
+                if (line.StartsWith("[node ")) {
+                    if (inRoot) break; // Reached the next node — the root block is complete.
+                    inRoot = true;
+                } else if (inRoot) {
+                    break; // A different section after the root node ends the block.
+                }
+            }
 
-			if (inRoot) rootBlock.AppendLine(line);
-		}
+            if (inRoot) rootBlock.AppendLine(line);
+        }
 
-		var block = rootBlock.ToString();
-		if (block.Length == 0) return null;
+        var block = rootBlock.ToString();
+        if (block.Length == 0) return null;
 
-		// Prefer the C# class attached to the root node via its script.
-		var scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
-		if (scriptMatch.Success &&
-		    scriptResources.TryGetValue(scriptMatch.Groups[1].Value, out var scriptPath)) {
-			var scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
-			var typeSymbol = allTypes[scriptClassName].FirstOrDefault();
-			if (typeSymbol != null) {
-				if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
-					classDefinition.UsingNamespaceName.Add(typeSymbol.ContainingNamespace.ToDisplayString());
-				return typeSymbol.ToDisplayString();
-			}
-		}
+        // Prefer the C# class attached to the root node via its script.
+        var scriptMatch = Regex.Match(block, @"script\s*=\s*ExtResource\(""([^""]+)""\)");
+        if (scriptMatch.Success &&
+            scriptResources.TryGetValue(scriptMatch.Groups[1].Value, out var scriptPath)) {
+            var scriptClassName = Path.GetFileNameWithoutExtension(scriptPath);
+            var typeSymbol = allTypes[scriptClassName].FirstOrDefault();
+            if (typeSymbol != null) {
+                if (!typeSymbol.ContainingNamespace.IsGlobalNamespace)
+                    classDefinition.UsingNamespaceName.Add(typeSymbol.ContainingNamespace.ToDisplayString());
+                return typeSymbol.ToDisplayString();
+            }
+        }
 
-		// Otherwise fall back to the Godot type of the root node, e.g. "Control".
-		var typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
-		return typeMatch.Success ? SceneRoot.GodotTypeName(compilation, typeMatch.Groups[1].Value) : null;
-	}
+        // Otherwise fall back to the Godot type of the root node, e.g. "Control".
+        var typeMatch = Regex.Match(block, @"type\s*=\s*""([^""]+)""");
+        return typeMatch.Success ? SceneRoot.GodotTypeName(compilation, typeMatch.Groups[1].Value) : null;
+    }
 
-	private static void GenerateClass(SourceProductionContext context, ClassDefinition definition) {
-		var fieldCode = new StringBuilder();
-		foreach (var memberDefinition in definition.MemberDefinitions) {
-			fieldCode.AppendLine($"    private {memberDefinition.Type} {memberDefinition.Name};");
-		}
+    private static void GenerateClass(SourceProductionContext context, ClassDefinition definition) {
+        var fieldCode = new StringBuilder();
+        foreach (var memberDefinition in definition.MemberDefinitions) {
+            fieldCode.AppendLine($"    private {memberDefinition.Type} {memberDefinition.Name};");
+        }
 
-		var memberCode = new StringBuilder();
-		foreach (var memberDefinition in definition.MemberDefinitions) {
-			memberCode.AppendLine(
-				$"""        {memberDefinition.Name} = GetNode<{memberDefinition.Type}>("%{memberDefinition.NodeName}");""");
-		}
+        var memberCode = new StringBuilder();
+        foreach (var memberDefinition in definition.MemberDefinitions) {
+            memberCode.AppendLine(
+                $"""        {memberDefinition.Name} = GetNode<{memberDefinition.Type}>("%{memberDefinition.NodeName}");""");
+        }
 
-		var usingCode = new StringBuilder();
-		foreach (var namespaceName in definition.UsingNamespaceName) usingCode.AppendLine($"using {namespaceName};");
+        var usingCode = new StringBuilder();
+        foreach (var namespaceName in definition.UsingNamespaceName) usingCode.AppendLine($"using {namespaceName};");
 
-		// Build up the source code
-		var code = $$"""
+        // Build up the source code
+        var code = $$"""
 		             // <auto-generated/>
 
 		             using System;
@@ -283,6 +283,6 @@ public class BindGenerator : IIncrementalGenerator {
 		             }
 
 		             """;
-		context.AddSource($"{definition.ClassName}.Binder.g.cs", SourceText.From(code, Encoding.UTF8));
-	}
+        context.AddSource($"{definition.ClassName}.Binder.g.cs", SourceText.From(code, Encoding.UTF8));
+    }
 }
