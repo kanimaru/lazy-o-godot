@@ -1,8 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
@@ -73,36 +71,9 @@ public class SceneGenerator : IIncrementalGenerator {
 		context.AddSource("GenUtilities.Scenes.g.cs", SourceText.From(code, Encoding.UTF8));
 	}
 
-	private static readonly Regex ScriptResource =
-		new("""^\[ext_resource type="Script"(?: uid="[^"]+")? path="res:\/\/([^"]+\.cs)" id="([^"]+)"\]""", RegexOptions.Multiline);
-
-	/// <summary>
-	/// The fully qualified C# class the scene's root node runs: the script on its first node, a class named like the script
-	/// file and derived from <c>Godot.Node</c>. <c>null</c> for a GDScript root, no script, or a class that cannot be found.
-	/// </summary>
+	/// <summary>The fully qualified C# class the scene's root runs, or <c>null</c>; see <see cref="SceneRoot.ScriptClass"/>.</summary>
 	private static string? RootType(Compilation compilation, AdditionalText scene, System.Threading.CancellationToken cancellationToken) {
 		var content = scene.GetText(cancellationToken)?.ToString();
-		if (string.IsNullOrEmpty(content)) return null;
-
-		var scripts = ScriptResource.Matches(content!).Cast<Match>()
-			.ToDictionary(match => match.Groups[2].Value, match => match.Groups[1].Value);
-		var root = Regex.Match(content!, @"^\[node [^\n]*\]\r?\n((?:(?!\[)[^\n]*\n)*)", RegexOptions.Multiline);
-		if (!root.Success) return null;
-		var script = Regex.Match(root.Value, @"^script\s*=\s*ExtResource\(""([^""]+)""\)", RegexOptions.Multiline);
-		if (!script.Success || !scripts.TryGetValue(script.Groups[1].Value, out var scriptPath)) return null;
-
-		var className = Path.GetFileNameWithoutExtension(scriptPath);
-		var type = compilation.GetSymbolsWithName(className, SymbolFilter.Type, cancellationToken)
-			.OfType<INamedTypeSymbol>()
-			.FirstOrDefault(IsNode);
-		return type?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-	}
-
-	private static bool IsNode(INamedTypeSymbol type) {
-		for (var current = type.BaseType; current is not null; current = current.BaseType) {
-			if (current.ToDisplayString() == "Godot.Node") return true;
-		}
-
-		return false;
+		return string.IsNullOrEmpty(content) ? null : SceneRoot.ScriptClass(compilation, content!, cancellationToken);
 	}
 }
