@@ -68,9 +68,16 @@ GetTree().GetNodesInGroup(Groups.enemies);
 For every `*.tscn` passed as an `AdditionalFile`, emits into `class GenUtilities.Scenes`:
 
 - `public const string Path<Name>` — the `res://` path, derived from the file path relative to `$(ProjectDir)`;
-- `public static T New<Name><T>() where T : Node` — `GD.Load<PackedScene>(...).Instantiate<T>()`;
+- `public static T New<Name><T>() where T : Node` — `GD.Load<PackedScene>(...).Instantiate<T>()`, loading the
+  scene once and keeping it referenced for the life of the process, as a GDScript `preload` does;
 - `public static <RootClass> New<Name>()` — only when the scene's root node runs a C# class: the same
   instantiation, already typed as that class.
+
+The kept reference is not a cache optimisation. A `PackedScene` wrapper left to the garbage collector races
+Godot's resource cache: when another scene instances the same scene after the wrapper was collected but before
+its finalizer ran, the C# binding loses its GC handle, and every later instantiation logs
+`Handle is not initialized` from `ScriptManagerBridge.SwapGCHandleForType`. A kept wrapper is never collected.
+Disposing a wrapper of the same scene elsewhere is harmless: the next `New<Name>()` loads it again.
 
 `<Name>` is the file name with each `snake_case` part capitalized (`main_menu.tscn` → `PathMainMenu`,
 `NewMainMenu<T>()`; `HeatJoystick.tscn` → `PathHeatJoystick`).
