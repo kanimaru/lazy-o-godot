@@ -517,8 +517,9 @@ release:tagged:
     tag_name: $CI_COMMIT_TAG
     name: "Dev.Kani.Godot.Generator $CI_COMMIT_TAG"
     description: |
-      Roslyn source generators for Godot C#: autowiring nodes, scene and resource
-      paths, signals, groups, singletons, logging and sync helpers.
+      Roslyn source generators for Godot 4 C#: typed unique-name nodes, scene,
+      autoload, input action and group access, resource tables, singletons, node
+      metadata, logging and multiplayer sync.
 
       Add it with `dotquay add Dev.Kani.Godot.Generator`, or reference it directly
       from this project's NuGet feed.
@@ -544,8 +545,9 @@ release:auto:
     tag_name: $RELEASE_TAG
     name: "Dev.Kani.Godot.Generator $RELEASE_TAG"
     description: |
-      Roslyn source generators for Godot C#: autowiring nodes, scene and resource
-      paths, signals, groups, singletons, logging and sync helpers.
+      Roslyn source generators for Godot 4 C#: typed unique-name nodes, scene,
+      autoload, input action and group access, resource tables, singletons, node
+      metadata, logging and multiplayer sync.
 
       Add it with `dotquay add Dev.Kani.Godot.Generator`, or reference it directly
       from this project's NuGet feed.

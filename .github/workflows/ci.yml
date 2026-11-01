@@ -1,0 +1,241 @@
+# lazy-o-godot CI on GitHub — the GitHub Packages counterpart of .gitlab-ci.yml
+#
+#   build    every push and PR     does the generator compile
+#   smoke    every push and PR     pack it, then make a throwaway Godot consumer
+#                                  project load the generators and use their output
+#   publish  vX.Y.Z tags only      push the .nupkg to GitHub Packages and create a
+#                                  GitHub Release for the tag
+#
+# Releases are tag-driven only. GitLab's pipeline reserves versions with its own
+# auto-tag job; a second counter here would hand out the same numbers twice, so
+# this workflow publishes whatever `vX.Y.Z` tag reaches GitHub and never invents one.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*.*.*']
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+  DOTNET_VERSION: '10.0.x'
+  # The Godot.NET.Sdk the smoke consumer builds with. Keep in step with
+  # GODOT_SDK_VERSION in .gitlab-ci.yml and with what real consumers are on.
+  GODOT_SDK_VERSION: '4.7.2'
+  PKG_ID: Dev.Kani.Godot.Generator
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - run: dotnet build dev.kani.godot.generator.csproj -c Release
+      # Surfaces warnings without failing the run, like build:warnings on GitLab.
+      - name: Build with warnings as errors (non-blocking)
+        continue-on-error: true
+        run: dotnet build dev.kani.godot.generator.csproj -c Release --no-incremental -warnaserror
+
+  # A source generator package fails silently: wrong package layout, a declared
+  # dependency or a too-new Roslyn all give a green restore and build with no
+  # generated code. So this consumes the package like a real Godot project and
+  # lets the compiler assert that the generators ran. See package:smoke in
+  # .gitlab-ci.yml for the reasoning behind each check.
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget
+      # The extracted package directory under NUGET_PACKAGES is always lowercase.
+      PKG_DIR_ID: dev.kani.godot.generator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Pack
+        run: |
+          PKG_VERSION="0.0.0-ci-${GITHUB_SHA::8}"
+          echo "PKG_VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
+          dotnet pack dev.kani.godot.generator.csproj -c Release -p:Version="$PKG_VERSION" \
+            -o "$GITHUB_WORKSPACE/pkg"
+
+      - name: Write the consumer project
+        run: |
+          mkdir -p smoke/fixture
+          cd smoke
+
+          # <clear/> so only the fresh pack and nuget.org (for Godot.NET.Sdk) are used.
+          cat > nuget.config <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="local" value="$GITHUB_WORKSPACE/pkg" />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+            </packageSources>
+          </configuration>
+          EOF
+
+          # CompilerGeneratedFilesOutputPath is pinned because Godot.NET.Sdk moves
+          # the intermediate output to .godot/mono/temp/obj/.
+          cat > smoke.csproj <<EOF
+          <Project Sdk="Godot.NET.Sdk/$GODOT_SDK_VERSION">
+            <PropertyGroup>
+              <TargetFramework>net10.0</TargetFramework>
+              <Nullable>enable</Nullable>
+              <WarningsAsErrors>CS8032;CS8034</WarningsAsErrors>
+              <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+              <CompilerGeneratedFilesOutputPath>\$(MSBuildProjectDirectory)/generated</CompilerGeneratedFilesOutputPath>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="$PKG_ID" Version="$PKG_VERSION" />
+            </ItemGroup>
+            <ItemGroup>
+              <AdditionalFiles Include="project.godot" />
+              <AdditionalFiles Include="fixture/**/*.tscn" />
+            </ItemGroup>
+          </Project>
+          EOF
+
+          # [application] first proves the parsers skip sections they do not own.
+          cat > project.godot <<'EOF'
+          [application]
+
+          config/name="smoke"
+
+          [global_group]
+
+          enemies="Every hostile unit"
+          players="Player controlled units"
+
+          [input]
+
+          move_forward={
+          "deadzone": 0.5
+          }
+          ui_smoke_accept={
+          "deadzone": 0.5
+          }
+          EOF
+
+          cat > fixture/player_ship.tscn <<'EOF'
+          [gd_scene format=3]
+
+          [node name="PlayerShip" type="Node2D"]
+          EOF
+
+          # Each member comes from a different generator; the compiler is the assertion.
+          cat > Smoke.cs <<'EOF'
+          using Godot;
+          using GenUtilities;
+
+          internal static class Smoke {
+              internal static void Main() {
+                  StringName action = Actions.moveforward;   // ActionGenerator, [input]
+                  StringName group = Groups.enemies;         // GroupGenerator, [global_group]
+                  string scenePath = Scenes.PathPlayerShip;  // SceneGenerator, *.tscn
+                  System.Console.WriteLine($"{action} {group} {scenePath}");
+              }
+          }
+          EOF
+
+      - name: Restore
+        working-directory: smoke
+        run: dotnet restore
+
+      - name: Check the package layout
+        run: |
+          RESTORED="$NUGET_PACKAGES/$PKG_DIR_ID/$PKG_VERSION"
+          if [ ! -f "$RESTORED/analyzers/dotnet/cs/Generators.dll" ]; then
+            echo "::error::Generators.dll is not at analyzers/dotnet/cs/ in the package."
+            find "$RESTORED" -type f | sed "s|$RESTORED/|  |"
+            exit 1
+          fi
+          if [ -d "$RESTORED/lib" ]; then
+            echo "::error::The package has a lib/ directory: IncludeBuildOutput is back on."
+            exit 1
+          fi
+          NUSPEC="$RESTORED/$PKG_DIR_ID.nuspec"
+          if ! grep -q '<developmentDependency>true</developmentDependency>' "$NUSPEC"; then
+            echo "::error::The nuspec does not declare developmentDependency."
+            cat "$NUSPEC"
+            exit 1
+          fi
+
+      - name: Build the consumer
+        working-directory: smoke
+        run: dotnet build -c Release --no-restore
+
+      - name: Check that sources were generated
+        working-directory: smoke
+        run: |
+          # AutowireAttribute is emitted unconditionally, so its absence means nothing ran.
+          MARKER="generated/Generators/GenUtilities.AutowireGenerator/AutowireAttribute.g.cs"
+          if [ ! -f "$MARKER" ]; then
+            echo "::error::No generated sources. Expected $MARKER"
+            find . -name '*.g.cs' -not -path './.nuget/*' -print || true
+            exit 1
+          fi
+          echo "generated sources:"
+          find generated -name '*.g.cs' | sed 's|^generated/Generators/|  |'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke
+          retention-days: 7
+          path: |
+            pkg/
+            smoke/generated/
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # the GitHub Release
+      packages: write   # the NuGet push
+    concurrency:
+      group: publish-${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Pack
+        run: |
+          if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$GITHUB_REF_NAME is not a vX.Y.Z release tag."
+            exit 1
+          fi
+          PKG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "packing $PKG_ID $PKG_VERSION"
+          dotnet pack dev.kani.godot.generator.csproj -c Release -p:Version="$PKG_VERSION" -o pkg
+
+      # No --skip-duplicate: re-publishing an existing version must fail loudly.
+      # GitHub links the package to this repository through the nuspec's
+      # repository URL (RepositoryUrl in the csproj).
+      - name: Push to GitHub Packages
+        run: >-
+          dotnet nuget push "pkg/*.nupkg"
+          --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          --api-key "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" pkg/*.nupkg \
+            --verify-tag \
+            --title "$PKG_ID $GITHUB_REF_NAME" \
+            --notes "Roslyn source generators for Godot C#. Install instructions: https://github.com/${{ github.repository }}#getting-started"
