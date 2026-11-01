@@ -5,7 +5,7 @@
         <Nullable>enable</Nullable>
         <LangVersion>latest</LangVersion>
 
-        <!-- This project is consumed via relative ProjectReference from other repos (e.g. CROSS.Godot).
+        <!-- This project can be consumed via relative ProjectReference from other repos.
              When referenced from inside a repo that turns on central package management, it must not
              inherit that repo's Directory.Packages.props; it manages its own package versions inline. -->
         <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
@@ -86,15 +86,19 @@
         <Version>0.1.0</Version>
 
         <Authors>kanimaru</Authors>
-        <Description>Roslyn source generators for Godot C# projects: autowiring nodes, scene and resource paths, signals, groups, singletons, logging and sync helpers.</Description>
-        <PackageTags>godot;source-generator;roslyn;analyzer;codegen</PackageTags>
+        <Description>Roslyn source generators for Godot 4 C#: typed unique-name nodes, scene, autoload, input action and group access, resource tables, singletons, node metadata, logging and multiplayer sync.</Description>
+        <PackageTags>godot;godot4;gamedev;source-generator;roslyn;analyzer;codegen</PackageTags>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/kanimaru/lazy-o-godot</PackageProjectUrl>
+        <PackageReadmeFile>Readme.md</PackageReadmeFile>
         <RepositoryUrl>https://github.com/kanimaru/lazy-o-godot</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
     </PropertyGroup>
 
     <ItemGroup>
         <None Include="$(OutputPath)$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false"/>
+        <!-- Shown on the package page. Its links are absolute so they work there too. -->
+        <None Include="Readme.md" Pack="true" PackagePath="/"/>
     </ItemGroup>
 
     <ItemGroup>

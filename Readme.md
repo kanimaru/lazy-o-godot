@@ -1,151 +1,225 @@
-# lazy-o-godot — Roslyn source generators for Godot C#
+# lazy-o-godot
 
-A set of Roslyn **incremental source generators** and one analyzer that remove boilerplate from Godot 4 C#
-projects: node binding, scene and autoload access, input actions, global groups, resource loading, singletons,
-node metadata interfaces, logging and multiplayer synchronization.
+Roslyn source generators for Godot 4 C#, so you can be lazy about the boilerplate.
 
-Everything lives in one project, `dev.kani.godot.generator.csproj`:
+lazy-o-godot reads your `project.godot`, `.tscn` and `.tres` files and your attributes at compile time and
+writes the tedious parts for you: typed node fields, scene paths and instantiation, autoload access, input
+action and group names, resource tables, singletons, node metadata helpers, loggers and multiplayer
+synchronization. An analyzer that catches a common Rx.NET threading mistake comes with it.
+
+```csharp
+using GenUtilities;
+
+public partial class MainMenu : Control {          // MainMenu.tscn has a %Title label
+    public override void _Ready() {
+        BindNodes();                                // _title = GetNode<Label>("%Title")
+        _title.Text = "Hi";
+
+        if (Input.IsActionPressed(Actions.jump)) {   // "jump" from project.godot [input]
+            GetTree().Root.AddChild(Scenes.NewLobby<Node>());
+        }
+        Autoloads.UserService.Login();
+    }
+}
+```
+
+Everything is generated at build time. Nothing from this package ends up in your game's output except the C#
+it writes.
 
 | | |
 |---|---|
-| Assembly | `Generators.dll` |
-| Root namespace | `GenUtilities` |
-| NuGet package id | `Dev.Kani.Godot.Generator` |
-| Target framework | `netstandard2.1` (Roslyn 4.3) |
+| NuGet package | `Dev.Kani.Godot.Generator` |
+| Namespace of generated code | `GenUtilities` |
+| Targets | Godot 4 .NET projects; the generator is `netstandard2.1` on Roslyn 4.3 |
 
-The generators are consumed as an **analyzer**, never as a runtime reference. Nothing from this assembly ends
-up in your game's output — only the C# it emits does.
+## Getting started
 
-## The generators
+### 1. Create a GitHub token
 
-All generated types and attributes live in the `GenUtilities` namespace. Attributes are emitted by the
-generators themselves (`RegisterPostInitializationOutput`), so you do not reference a separate attribute
-package — just `using GenUtilities;`.
+The package is published to [GitHub Packages](https://github.com/kanimaru/lazy-o-godot/packages), and GitHub's
+NuGet registry needs a login even to download public packages.
 
-| Generator | Triggered by | Generates |
+1. Create a [personal access token (classic)](https://github.com/settings/tokens/new?scopes=read:packages&description=lazy-o-godot)
+   with only the **`read:packages`** scope. Fine-grained tokens do not work with GitHub's NuGet registry.
+2. Put it in the `GITHUB_PACKAGES_TOKEN` environment variable on your machine (and as a secret in your own
+   CI).
+
+### 2. Add the package
+
+Add the feed once in a `nuget.config` next to your solution:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+    <add key="lazy-o-godot" value="https://nuget.pkg.github.com/kanimaru/index.json" />
+  </packageSources>
+  <packageSourceCredentials>
+    <lazy-o-godot>
+      <add key="Username" value="<your-github-username>" />
+      <add key="ClearTextPassword" value="%GITHUB_PACKAGES_TOKEN%" />
+    </lazy-o-godot>
+  </packageSourceCredentials>
+</configuration>
+```
+
+NuGet reads `%GITHUB_PACKAGES_TOKEN%` from the environment, so the token never has to be committed.
+
+Then reference the package in your game's `.csproj`:
+
+```xml
+<ItemGroup>
+  <PackageReference Include="Dev.Kani.Godot.Generator" Version="x.y.z" />
+</ItemGroup>
+```
+
+The package is a development dependency: it is loaded by your compiler only and does not flow on to projects
+that reference yours.
+
+### 3. Show the generators your Godot files
+
+Roslyn only sees files you list as `<AdditionalFiles>`. Several generators read Godot's files rather than C#,
+and without these entries they quietly generate nothing:
+
+```xml
+<ItemGroup>
+  <AdditionalFiles Include="project.godot" />          <!-- Actions, Groups, Autoloads -->
+  <AdditionalFiles Include="src\**\*.tscn" />          <!-- Scenes, BindNodes, Singleton, Autoload types -->
+  <AdditionalFiles Include="game_data\**\*.tres" />    <!-- ResourcePath -->
+</ItemGroup>
+```
+
+| File | Read by |
+|---|---|
+| `project.godot` | `Actions` (`[input]`), `Groups` (`[global_group]`), `Autoloads` (`[autoload]`) |
+| `*.tscn` | `Scenes`, `BindNodes()`, and through `Scenes` also `[Singleton]`; `Autoloads` uses them to type scene autoloads |
+| `*.tres` | `[ResourcePath]`, for files in the directories it names |
+
+Only listed scenes get `Scenes` members, so test or asset scenes you leave out stay out of the API.
+
+Keep the `.tres` globs to the directories your `[ResourcePath]` classes name: that generator treats every
+additional file in a matching directory as a resource, so a stray `.gdshader` there produces code that does
+not compile.
+
+### 4. Use it
+
+Add `using GenUtilities;` and you're set. The attributes are generated too, so there is no separate attribute
+package to reference.
+
+### Building from source
+
+To work on the generators, or to use an unreleased version, reference a checkout as an analyzer:
+
+```xml
+<ProjectReference Include="..\lazy-o-godot\dev.kani.godot.generator.csproj"
+                  OutputItemType="Analyzer" ReferenceOutputAssembly="false" PrivateAssets="all" />
+```
+
+`OutputItemType="Analyzer"` makes the compiler load the generators; `ReferenceOutputAssembly="false"` keeps
+`Generators.dll` out of your game.
+
+## What it generates
+
+| Feature | Triggered by | You get |
 |---|---|---|
-| [ActionGenerator](ActionGenerator.cs) | `project.godot` in `AdditionalFiles` | `GenUtilities.Actions` |
-| [GroupGenerator](GroupGenerator.cs) | `project.godot` in `AdditionalFiles` | `GenUtilities.Groups` |
-| [SceneGenerator](SceneGenerator.cs) | `*.tscn` in `AdditionalFiles` | `GenUtilities.Scenes` |
-| [AutoloadGenerator](AutoloadGenerator.cs) | `project.godot` (and `*.tscn` to type them) in `AdditionalFiles` | `GenUtilities.Autoloads` |
-| [BindGenerator](BindGenerator.cs) | a `*.tscn` whose file name matches a class name | `<Class>.Binder.g.cs` |
-| [AutowireGenerator](AutowireGenerator.cs) | `[Autowire(...)]` on a property | `<Class>.Autowire.g.cs` |
-| [SingletonGenerator](SingletonGenerator.cs) | `[Singleton]` on a class | `<Class>.g.cs` |
-| [MetaGenerator](MetaGenerator.cs) | `[RegisterMeta]` on a class/record/interface | `<Type>.g.cs` |
-| [LoggerGenerator](LoggerGenerator.cs) | `[Log]` on a class | `<Class>.Logger.g.cs` |
-| [SyncGenerator](SyncGenerator.cs) | `[Sync]` on a field/property, `[SyncSettings]` on the class | `<Class>.Sync.g.cs` |
-| [ResourceGenerator](ResourceGenerator.cs) | `[ResourcePath("dir")]` on a class + `*.tres` in `AdditionalFiles` | `<Class>.Res.g.cs` |
-| [RxSchedulerAnalyzer](RxSchedulerAnalyzer.cs) | Rx.NET time-based operators | warning `LZ0001` |
+| [Input actions](#input-actions--actions) | `project.godot` | `Actions.<action>` |
+| [Global groups](#global-groups--groups) | `project.godot` | `Groups.<group>` |
+| [Scenes](#scenes--scenes) | `*.tscn` | `Scenes.Path<Name>`, `Scenes.New<Name>()` |
+| [Autoloads](#autoloads--autoloads) | `project.godot` (+ `*.tscn`) | `Autoloads.<Name>` |
+| [Unique-name nodes](#unique-name-nodes--bindnodes) | a `*.tscn` named like your class | `BindNodes()` and typed fields |
+| [Property wiring](#property-wiring--autowire) | `[Autowire]` | properties that write through to child nodes |
+| [Singletons](#singletons--singleton) | `[Singleton]` | `Instance`, `GetOrCreate()` |
+| [Node metadata](#node-metadata--registermeta) | `[RegisterMeta]` | `GetImpl()`, `SetImpl()` |
+| [Logging](#logging--log) | `[Log]` | a static `log` field |
+| [Multiplayer sync](#multiplayer-sync--sync) | `[Sync]`, `[SyncSettings]` | `StartSync()`, setters and change events |
+| [Resource tables](#resource-tables--resourcepath) | `[ResourcePath]` + `*.tres` | a static field per resource, plus `All` |
+| [Rx scheduler check](#rx-scheduler-check--lz0001) | Rx.NET time operators | warning `LZ0001` |
 
-### ActionGenerator — `Actions`
+### Input actions — `Actions`
 
-Reads the `[input]` section of `project.godot` and emits one `static StringName` per input action into
-`partial class GenUtilities.Actions`. The field name is the action key with every non-alphanumeric character
-stripped, **case kept** (`click` stays `click`); the value is the untouched action name.
+One `StringName` per action in the `[input]` section of `project.godot`. Non-alphanumeric characters are
+dropped from the member name and the case is kept; the value is the real action name.
 
 ```ini
-# project.godot
 [input]
 move_left={...}
 ```
 
 ```csharp
-if (Input.IsActionPressed(Actions.move_left)) { ... }
+if (Input.IsActionPressed(Actions.moveleft)) { ... }
 ```
 
-### GroupGenerator — `Groups`
+### Global groups — `Groups`
 
-Same input file, `[global_group]` section. Emits one `static StringName` per global group into
-`partial class GenUtilities.Groups`, with the group's description from `project.godot` as the XML doc comment.
-Use it instead of string literals or constants of your own:
+One `StringName` per entry in the `[global_group]` section of `project.godot`, documented with the group's
+description.
 
 ```csharp
 GetTree().GetNodesInGroup(Groups.enemies);
 ```
 
-### SceneGenerator — `Scenes`
+### Scenes — `Scenes`
 
-For every `*.tscn` passed as an `AdditionalFile`, emits into `class GenUtilities.Scenes`:
+For every `*.tscn` you list as an additional file:
 
-- `public const string Path<Name>` — the `res://` path, derived from the file path relative to `$(ProjectDir)`;
-- `public static T New<Name><T>() where T : Node` — `GD.Load<PackedScene>(...).Instantiate<T>()`, loading the
-  scene once and keeping it referenced for the life of the process, as a GDScript `preload` does;
-- `public static <RootClass> New<Name>()` — only when the scene's root node runs a C# class: the same
-  instantiation, already typed as that class.
+- `Path<Name>`: the scene's `res://` path;
+- `New<Name><T>()`: loads and instantiates the scene as `T`;
+- `New<Name>()`: the same, already typed as the root's C# class, when the root runs one.
 
-The kept reference is not a cache optimisation. A `PackedScene` wrapper left to the garbage collector races
-Godot's resource cache: when another scene instances the same scene after the wrapper was collected but before
-its finalizer ran, the C# binding loses its GC handle, and every later instantiation logs
-`Handle is not initialized` from `ScriptManagerBridge.SwapGCHandleForType`. A kept wrapper is never collected.
-Disposing a wrapper of the same scene elsewhere is harmless: the next `New<Name>()` loads it again.
-
-`<Name>` is the file name with each `snake_case` part capitalized (`main_menu.tscn` → `PathMainMenu`,
-`NewMainMenu<T>()`; `HeatJoystick.tscn` → `PathHeatJoystick`).
+`<Name>` is the file name in PascalCase (`main_menu.tscn` → `PathMainMenu`, `NewMainMenu<T>()`).
 
 ```csharp
-HighscoreRow row = Scenes.NewHighscoreRow();           // root runs the C# class HighscoreRow
-Node level = Scenes.NewLobby<Node>();                  // GDScript or script-less root
+HighscoreRow row = Scenes.NewHighscoreRow();    // root runs the C# class HighscoreRow
+Node level = Scenes.NewLobby<Node>();           // GDScript or script-less root
 PackedScene packed = GD.Load<PackedScene>(Scenes.PathLobby);
 ```
 
-The root's class is found through its `script` `ext_resource` (a `.cs` file named like the class, deriving
-from `Godot.Node`). A GDScript root or a missing class gets only the generic `New<Name><T>()`.
+The root's class is found through its `script` resource: a `.cs` file named like a class deriving from `Node`.
 
-### AutoloadGenerator — `Autoloads`
+Each scene is loaded once and stays referenced, like a GDScript `preload`. That also avoids a Godot .NET issue
+where a garbage-collected `PackedScene` wrapper later makes every instantiation of that scene log
+`Handle is not initialized`.
 
-Reads the `[autoload]` section of `project.godot` and emits, for each entry, into
-`static partial class GenUtilities.Autoloads`:
+`Scenes` is `internal`, so use it from the project that holds the scenes.
 
-```csharp
-public const string PathUserService = "/root/UserService";
-public static UserService UserService => /* root.GetNode<UserService>(PathUserService) */;
-public static UserService? UserServiceOrNull => /* null while the autoload is not in the tree */;
-```
+### Autoloads — `Autoloads`
 
-Use `…OrNull` where the autoload may not exist, such as `[Tool]` code running in the editor.
-
-The member's type comes from what the autoload points at:
-
-1. a `.cs` script: the class of that file;
-2. a `.tscn`: the class its root runs (a `uid://…` entry is resolved through the scene headers; the scene must
-   be an `AdditionalFile`), else the root's Godot class;
-3. a GDScript, or anything the generator cannot resolve: `Godot.Node`.
+Typed access to every entry in the `[autoload]` section of `project.godot`:
 
 ```csharp
-Autoloads.UserService.LoadAsync(id);          // instead of GetNode<UserService>("/root/UserService")
+Autoloads.UserService.LoadAsync(id);       // instead of GetNode<UserService>("/root/UserService")
 if (Autoloads.NotificationsOrNull is { } notifications) { ... }
+string path = Autoloads.PathUserService;   // "/root/UserService"
 ```
 
-An autoload whose name is not a valid C# identifier is skipped.
+Use the `…OrNull` variant where the autoload may not be in the tree, such as `[Tool]` code in the editor.
 
-### BindGenerator — `%UniqueName` node fields
+The type is taken from what the autoload points at: the class of a `.cs` script; the class (or Godot type) of a
+scene's root, if the scene is an additional file; otherwise `Node`. Autoloads whose names are not valid C#
+identifiers are skipped.
 
-For each class whose name matches a `*.tscn` file name (case-insensitive, extension stripped; the folder does
-not matter), scans that scene for nodes marked **Access as Unique Name** (`unique_name_in_owner = true`) and
-emits a private field per node plus a `BindNodes()` method that fills them with `GetNode<T>("%NodeName")`.
+### Unique-name nodes — `BindNodes()`
 
-The field name is the node name with a leading underscore and a lowercased first letter (`Title` → `_title`).
-The field type is resolved in this order:
-
-1. for an instanced scene whose instance carries its own `script`: that class (the override wins);
-2. for an instanced scene: the class whose name matches the instanced `.tscn` file name;
-3. failing that, the C# class on that instanced scene's **root** node, else its Godot type;
-4. for a regular node: the C# class attached via its `script`, else the node's Godot type.
-
-Godot types are spelled the way the C# bindings do (the scene's `GPUParticles3D` becomes `GpuParticles3D`).
-
-Your class must be `partial`, and you call `BindNodes()` yourself, typically first thing in `_Ready()`:
+When a class has the same name as a `.tscn` file (case-insensitive, any folder), every node in that scene
+marked **Access as Unique Name** becomes a typed private field, filled by a generated `BindNodes()`:
 
 ```csharp
-public partial class MainMenu : Control {   // MainMenu.tscn, next to MainMenu.cs
+public partial class MainMenu : Control {   // MainMenu.tscn, with a unique node "Title"
     public override void _Ready() {
-        BindNodes();        // generated: _title = GetNode<Label>("%Title");
+        BindNodes();                        // _title = GetNode<Label>("%Title");
         _title.Text = "Hi";
     }
 }
 ```
 
-If callers fill the node before it enters the tree, bind when the scene is instantiated instead:
+The field is named `_` plus the node name with a lowercase first letter (`Title` → `_title`). Its type is the
+node's C# class when it has one: the script on the node, or for an instanced scene the class named like that
+scene or the class on its root. Otherwise it is the node's Godot type, spelled as in the C# bindings
+(`GPUParticles3D` → `GpuParticles3D`).
+
+The class must be `partial`, and you call `BindNodes()` yourself. If nodes must be available before the scene
+enters the tree, bind on instantiation instead:
 
 ```csharp
 public override void _Notification(int what) {
@@ -155,38 +229,30 @@ public override void _Notification(int what) {
 }
 ```
 
-`BindNodes()` fails loudly (Godot's own "node not found" error) for each unique node that is missing, so a
-class whose nodes are optional keeps `GetNodeOrNull` for those.
+A missing node triggers Godot's usual "node not found" error, so keep `GetNodeOrNull` for nodes that are
+optional.
 
-### AutowireGenerator — `[Autowire]`
+### Property wiring — `[Autowire]`
 
-```csharp
-[AttributeUsage(AttributeTargets.Property)]
-Autowire(string nodeFieldName, string nodeMemberName)
-```
-
-Put it on a property to push that property's value into a member of a child node, safely before and after the
-node is ready:
+Forward a property to a member of a child node, whether or not the node is ready yet:
 
 ```csharp
 public partial class MainMenu : Control {
     [Autowire(nameof(_title), nameof(Label.Text))]
     public string Title { get => _titleVal; set => UpdateTitle(value); }
+
+    public override void _Ready() {
+        BindNodes();
+        RefreshAllComponents();             // pushes values set before _Ready
+    }
 }
 ```
 
-For every annotated property the generator emits a backing field `_<property>Val`, an
-`Update<Property>(value)` method that stores the value and writes it through to the node only when
-`IsNodeReady()`, and a single `RefreshAllComponents()` that replays every stored value — call it once the node
-tree exists (e.g. in `_Ready()`, after `BindNodes()`).
+For each property you get a `_<property>Val` backing field and an `Update<Property>(value)` method that stores
+the value and writes it to the node once `IsNodeReady()`. `RefreshAllComponents()` replays every stored value.
+The class must be a `public partial` class deriving from `Node`.
 
-The emitted partial is declared `public partial class`, and the generated code calls `IsNodeReady()`, so the
-annotated type must be a `public partial` class deriving from `Node`.
-
-### SingletonGenerator — `[Singleton]`
-
-On a `partial class`, emits `Instance`, a `_instance` backing field and `GetOrCreate()`, which instantiates the
-scene through `Scenes.New<ClassName><T>()` and adds it to the scene tree root:
+### Singletons — `[Singleton]`
 
 ```csharp
 [Singleton]
@@ -195,34 +261,46 @@ public partial class AudioManager : Node { }
 AudioManager.Instance.Play(...);
 ```
 
-Because it goes through `Scenes`, this requires a `<ClassName>.tscn` to be visible to
-[SceneGenerator](#scenegenerator--scenes). A non-`partial` type is reported as error **MG001**. For an
-autoload, prefer [`Autoloads`](#autoloadgenerator--autoloads).
+`GetOrCreate()` instantiates `AudioManager.tscn` through [`Scenes`](#scenes--scenes) and adds it to the tree
+root, so that scene must be an additional file. A non-`partial` class is reported as error `MG001`. For
+autoloads, use [`Autoloads`](#autoloads--autoloads) instead.
 
-### MetaGenerator — `[RegisterMeta]`
+### Node metadata — `[RegisterMeta]`
 
-On a `partial` class, record or interface, emits a pair of statics that store/retrieve an implementation of
-that type in a node's Godot metadata, keyed by the type name:
+On a `partial` class, record or interface, generates helpers that store an implementation of that type in a
+node's metadata:
 
 ```csharp
-public static T? GetImpl(Node node);          // the node itself if it already is a T, else its meta entry
+public static T? GetImpl(Node node);              // the node itself if it is a T, else its metadata entry
 public static void SetImpl(Node node, Variant impl);
 ```
 
-Useful for attaching capability interfaces (`ITakeDamage`, …) to nodes that cannot inherit them. A
-non-`partial` type is reported as error **MG001**.
+Handy for attaching capability interfaces such as `ITakeDamage` to nodes that cannot implement them. A
+non-`partial` type is reported as error `MG001`.
 
-### LoggerGenerator — `[Log]`
+### Logging — `[Log]`
 
-On a `partial class`, emits `private static SimpleLogger log = new SimpleLogger("<ClassName>");`. Generic
-classes are handled (the type parameter list is reproduced on the partial).
+On a `partial class`, generates `private static SimpleLogger log = new SimpleLogger("<ClassName>");`. Generic
+classes are supported.
 
-> This is the one generator whose output has a **runtime dependency**: the emitted file does
-> `using dev.kani.godot.util.logging;`, so the consuming project must reference `dev.kani.godot.util`.
+This is the only feature that needs code of your own: the generated field is a
+`dev.kani.godot.util.logging.SimpleLogger`, which this package does not ship. Any class with that name and a
+`string` constructor works, for example:
 
-### SyncGenerator — `[Sync]` / `[SyncSettings]`
+```csharp
+namespace dev.kani.godot.util.logging;
 
-Builds a Godot `MultiplayerSynchronizer` and its `SceneReplicationConfig` from annotated members.
+public class SimpleLogger(string name) {
+    public void Debug(string message) => Godot.GD.Print($"[{name}] {message}");
+    public void Error(string message) => Godot.GD.PushError($"[{name}] {message}");
+}
+```
+
+Without such a class, `[Log]` fails to compile; the other features are unaffected.
+
+### Multiplayer sync — `[Sync]`
+
+Builds a `MultiplayerSynchronizer` and its `SceneReplicationConfig` from annotated members:
 
 ```csharp
 [SyncSettings(ReplicationInterval = 0.1f, PublicVisibility = true,
@@ -231,243 +309,119 @@ public partial class Player : CharacterBody2D {
     [Sync(ReplicationMode = SceneReplicationConfig.ReplicationMode.OnChange, Spawn = true)]
     private int _health;
 
-    [Export] public int Health { get => _health; set => SetHealth(value); }
+    [Export]
+    public int Health { get => _health; set => SetHealth(value); }
 
-    public override void _Ready() => StartSync();
+    public override void _Ready() {
+        StartSync();
+    }
 }
 ```
 
-Emitted per class: `_syncConfig`, `_synchronizer`, and a `StartSync()` that configures the synchronizer from
-`[SyncSettings]`, registers a replicated property per `[Sync]` member and adds the synchronizer as a child.
-Emitted per member: `Set<Name>(value)` (a no-op if unchanged, otherwise assigns and raises the event) and an
-`event Action<T>? <Name>Changed`. `<Name>` is the member name with leading underscores trimmed and the first
-letter uppercased.
+`StartSync()` configures and adds the synchronizer. For each member you get `Set<Name>(value)`, which assigns
+and raises `<Name>Changed` only when the value changes. `<Name>` is the member name without leading
+underscores, capitalized.
 
-`[SyncSettings]` knobs: `DeltaInterval`, `ReplicationInterval`, `PublicVisibility`, `VisibilityUpdateMode`.
-`[Sync]` knobs: `ReplicationMode`, `Spawn`, `Logging`.
+The replicated path is `".:<Name>"`, so declare the property that wraps the field yourself, as above.
 
-Note that the generator registers `".:<Name>"` as the replicated path but does **not** emit the property
-itself — declaring the (usually `[Export]`) property that wraps the field is up to you. See
-[Known quirks](#known-quirks) for the current limits of `Spawn` / `Logging`.
+Settings: `[SyncSettings]` takes `DeltaInterval`, `ReplicationInterval`, `PublicVisibility` and
+`VisibilityUpdateMode`; `[Sync]` takes `ReplicationMode`, `Spawn` and `Logging`. See
+[Known issues](#known-issues).
 
-### ResourceGenerator — `[ResourcePath]`
+### Resource tables — `[ResourcePath]`
 
 ```csharp
 [ResourcePath("game_data/items")]
 public partial class Items { }
 ```
 
-Every `AdditionalFile` whose containing directory path ends with that string becomes a `static readonly`
-field on the class, named after the file (extension stripped) and typed by the `script_class="…"` — or,
-failing that, the `type="…"` — recorded on the first line of the `.tres`:
+Every additional file in a directory ending with that path becomes a static field, named after the file and
+typed by the resource's `script_class` (or `type`):
 
 ```csharp
-public static readonly ItemData sword =
-    GD.Load<ItemData>(ProjectSettings.GlobalizePath("res://game_data/items/sword.tres"));
-
-public static ItemData[] All => [ sword, ... ];   // Resource[] if the types are mixed
+public static readonly ItemData sword = GD.Load<ItemData>(/* res://game_data/items/sword.tres */);
+public static ItemData[] All => [sword, ...];     // Resource[] if the types are mixed
 ```
 
-It loads through `GlobalizePath` and names members after the file name verbatim (no case change), so it
-suits tool-side data more than exported games.
+Resources are loaded through `ProjectSettings.GlobalizePath` and members keep the file name as is, so this
+suits editor and tool-side data better than exported games.
 
-### RxSchedulerAnalyzer — `LZ0001`
+### Rx scheduler check — `LZ0001`
 
-Rx.NET's time-based operators (`Timer`, `Interval`, `Delay`, `Throttle`, `Sample`, `Buffer`, `Window`,
-`Timeout`, `Timestamp`, `TimeInterval`, …) default to the thread pool when you give them no scheduler. In
-Godot the callback then touches the scene tree from a worker thread, which corrupts engine state
-intermittently instead of failing loudly.
+Rx.NET's time-based operators (`Timer`, `Interval`, `Delay`, `Throttle`, `Buffer`, `Timeout`, …) run on the
+thread pool when you don't pass a scheduler. In Godot the callback then touches the scene tree from a worker
+thread, which breaks things intermittently instead of failing loudly.
 
-`LZ0001` (warning, category Threading) reports a call to `System.Reactive.Linq.Observable` that takes a
-`TimeSpan` or `DateTimeOffset` (or is `Timestamp`/`TimeInterval`), passes no `IScheduler`, and has an
-overload that takes one. Pass a scheduler that runs on the main thread (one driven from `_Process`):
+`LZ0001` warns about such calls when an overload that takes an `IScheduler` exists. Pass one that runs on the
+main thread:
 
 ```csharp
 Observable.Timer(TimeSpan.FromSeconds(1), GodotSchedulers.Process);   // fine
 Observable.Timer(TimeSpan.FromSeconds(1));                            // LZ0001
 ```
 
-The analyzer only runs when `System.Reactive` is referenced. Generated code is not analyzed.
+The check only runs when `System.Reactive` is referenced.
 
-## Consuming it
+## Troubleshooting
 
-Two supported paths. Either way the reference must be wired up as an **analyzer**, not a normal reference.
+A source generator that cannot run fails quietly: the build succeeds and the generated code is simply
+missing. Check, in this order:
 
-### 1. Local checkout (development)
+1. Is it referenced as an analyzer? The package does this for you; a `ProjectReference` needs
+   `OutputItemType="Analyzer"`.
+2. Add `<WarningsAsErrors>CS8032;CS8034</WarningsAsErrors>` to your project. CS8032 is the compiler's warning
+   for a generator it could not load.
+3. Are your Godot files listed as `<AdditionalFiles>`, and do the globs match?
+4. Is the class `partial` (and `public` for `[Autowire]`)?
+5. For `BindNodes()`: is the class named exactly like the scene file, ignoring case?
 
-With dotquay the project links a checkout and undoes it again:
+To read what was generated, set `<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>` in your
+project and look under `obj/…/generated/Generators/`. Old files stay there when a generator stops emitting
+them, so delete the folder before trusting it.
 
-```bash
-dotquay link Dev.Kani.Godot.Generator <path-to-this-folder> --analyzer
-dotquay link Dev.Kani.Godot.Generator --remove
-```
+## Known issues
 
-Without it, a `ProjectReference` does the same job:
+- `[Sync]`: `Spawn` currently takes the value of `Logging`, and `Logging` never adds its debug output.
+- `[Sync]` on a property registers it for replication and creates its event, but ignores `ReplicationMode` and
+  `Spawn`; those only work on fields.
+- `[Singleton]` and `[RegisterMeta]` share the diagnostic id `MG001`.
 
-```xml
-<ProjectReference Include="..\dev.kani.godot.generator\dev.kani.godot.generator.csproj"
-                  PrivateAssets="true" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-```
+## Contributing
 
-`OutputItemType="Analyzer"` is what makes the compiler load the generators;
-`ReferenceOutputAssembly="false"` keeps `Generators.dll` out of the game's output.
-
-IDEs that host Roslyn (Rider and others) lock the analyzer DLL while they run, which makes a rebuild of a
-linked checkout fail with `MSB3021`. Compile against a copy instead: the consumer's build can copy the
-analyzer into `obj/` under a content-hashed name.
-
-### 2. PackageReference (GitLab package registry)
-
-```bash
-dotquay add Dev.Kani.Godot.Generator
-dotquay update Dev.Kani.Godot.Generator     # bump to the latest release
-```
-
-or by hand:
-
-```xml
-<PackageReference Include="Dev.Kani.Godot.Generator" Version="x.y.z" PrivateAssets="all" />
-```
-
-The package ships the generator at `analyzers/dotnet/cs/` and has no `lib/` folder and no declared
-dependencies, so no extra MSBuild metadata is needed to make it act as an analyzer.
-
-The feed is the project-scoped GitLab NuGet registry, which requires authentication even for reads. Add a
-`nuget.config` next to your solution (dotquay writes this for you):
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <packageSources>
-    <add key="lazy-o-godot"
-         value="https://<gitlab-host>/api/v4/projects/<project-id>/packages/nuget/index.json" />
-  </packageSources>
-  <packageSourceCredentials>
-    <lazy-o-godot>
-      <add key="Username" value="<your-gitlab-username>" />
-      <add key="ClearTextPassword" value="%GITLAB_NUGET_TOKEN%" />
-    </lazy-o-godot>
-  </packageSourceCredentials>
-</configuration>
-```
-
-The token is a **personal access token with `read_api` scope** (a project access or deploy token with
-`read_package_registry` works too). NuGet expands `%VAR%` from the environment, so keep the token in
-`GITLAB_NUGET_TOKEN` rather than committing it.
-
-### Releases
-
-[.gitlab-ci.yml](.gitlab-ci.yml) releases from the default branch:
-
-- A green pipeline on `master` auto-tags the next patch version `vX.Y.Z`, publishes it to the registry and
-  creates a GitLab Release for it — **only when `*.cs` or the csproj changed**. Editing the Readme or the
-  pipeline does not burn a version.
-- The tag is pushed with `$CI_JOB_TOKEN`, so the project must allow Git push requests with the job token. No
-  credential is put into a remote URL.
-- To cut a specific major/minor, push a `vX.Y.Z` tag yourself — that tag runs its own pipeline through publish
-  and becomes the baseline the next patch bump counts from.
-- The `<Version>` in the csproj is a local-`dotnet pack` fallback only; CI always overrides it with
-  `-p:Version=`.
-
-### Required `AdditionalFiles`
-
-Several generators read Godot's own files rather than C#, and Roslyn only sees files declared as
-`<AdditionalFiles>`. Without these entries the corresponding generators silently produce nothing.
-
-```xml
-<ItemGroup>
-  <AdditionalFiles Include="project.godot" />                <!-- Actions, Groups, Autoloads -->
-  <AdditionalFiles Include="src\**\*.tscn" />                <!-- Scenes, Bind, Singleton, Autoload typing -->
-  <AdditionalFiles Include="game_data\**\*.tres" />          <!-- ResourceGenerator -->
-</ItemGroup>
-```
-
-| Glob | Read by |
-|---|---|
-| `project.godot` | `ActionGenerator` (`[input]`), `GroupGenerator` (`[global_group]`), `AutoloadGenerator` (`[autoload]`) |
-| `*.tscn` | `SceneGenerator`, `BindGenerator` — and therefore `SingletonGenerator`, which calls into `Scenes`; `AutoloadGenerator` types scene autoloads through them |
-| `*.tres` | `ResourceGenerator`, for files under a directory named by a `[ResourcePath]` |
-
-Only scenes that are `AdditionalFiles` get `Scenes` members, so test scenes and asset scenes you leave out
-stay out of the API.
-
-Scope the `.tres` globs to the directories your `[ResourcePath]` classes actually name.
-`ResourceGenerator` does **not** filter by extension: any `AdditionalFile` sitting in a matching directory is
-treated as a `.tres`, so a `*.gdshader` (or anything else without a `script_class=`/`type=` first line) landing
-in one of those directories will produce uncompilable output. No generator in this repo reads `*.gdshader`
-directly — including that glob is only safe while those files live outside every `[ResourcePath]` directory.
-
-## Known quirks
-
-- **`[Sync]`'s `Spawn` and `Logging`.** In `SyncGenerator`, `MemberDefinition.Spawn` is assigned twice — first
-  from the `Spawn` argument, then overwritten from `Logging`. So `Spawn` currently follows the value of
-  `Logging`, and `Logging` itself is never true, meaning the `log.Debug(...)` line in the generated setter is
-  never emitted.
-- **`[Sync]` on properties** registers the property for replication and generates its event, but the
-  `ReplicationMode` / `Spawn` arguments are only read for *fields*.
-- `SingletonGenerator` and `MetaGenerator` share the diagnostic id **MG001** for "type must be partial".
-- `Scenes` is generated without an access modifier (internal); reach it from the project that declares the
-  scenes.
-
-## Code style
-
-The project follows the [Google C# style guide](https://google.github.io/styleguide/csharp-style.html), encoded
-in [.editorconfig](.editorconfig). The one deviation is 4-wide indents instead of 2. Format with:
+Issues and pull requests are welcome.
 
 ```bash
-dotnet format whitespace . --folder --exclude obj --exclude bin
+dotnet build dev.kani.godot.generator.csproj
 ```
 
-## How To?
-
-### How to debug?
-
-- Use the [launchSettings.json](Properties/launchSettings.json) profile — a `DebugRoslynComponent` profile
-  pointing `targetProject` at a real consumer project, e.g.:
+- The code follows the [Google C# style guide](https://google.github.io/styleguide/csharp-style.html) with
+  4-space indents, encoded in [.editorconfig](https://github.com/kanimaru/lazy-o-godot/blob/master/.editorconfig). Format with
+  `dotnet format whitespace . --folder --exclude obj --exclude bin`.
+- To debug a generator, add a `Properties/launchSettings.json` (it is gitignored) with a
+  `DebugRoslynComponent` profile pointing at a Godot project:
 
   ```json
   {
     "profiles": {
-      "DebugRoslynSourceGenerator": {
+      "DebugGenerators": {
         "commandName": "DebugRoslynComponent",
-        "targetProject": "../BlackHaul.Game/BlackHaul.Game.csproj"
+        "targetProject": "../MyGame/MyGame.csproj"
       }
     }
   }
   ```
 
-  The file is gitignored, so create your own with the consumer projects you care about.
-- To inspect the output instead of the generator, set
-  `<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>` in the *consumer* and read
-  `obj/<Config>/<Tfm>/generated/Generators/…`. Stale files from an older generator stay on disk; delete the
-  folder before you trust it.
+- CI ([.github/workflows/ci.yml](https://github.com/kanimaru/lazy-o-godot/blob/master/.github/workflows/ci.yml)) packs the generator and builds a small Godot
+  project against the package, failing if the generators do not load or produce nothing.
+- Useful references: the [Rossynt](https://plugins.jetbrains.com/plugin/16902-rossynt/) syntax tree viewer,
+  the [Source Generators Cookbook](https://github.com/dotnet/roslyn/blob/main/docs/features/source-generators.cookbook.md)
+  and [Let's Build an Incremental Source Generator With Roslyn](https://youtu.be/azJm_Y2nbAI) by Stefan Pölz.
 
-### Nothing is generated — what now?
+### Releases
 
-A failing source generator fails *silently*: restore and build both succeed and no code appears. In order:
-
-1. Is the reference wired as an analyzer (`OutputItemType="Analyzer"`, or the NuGet package resolving to
-   `analyzers/dotnet/cs/Generators.dll`)?
-2. Set `<WarningsAsErrors>CS8032;CS8034</WarningsAsErrors>` in the consumer — CS8032 is the compiler's
-   *warning* for a generator that could not be loaded.
-3. Are the `<AdditionalFiles>` entries present, and do the globs actually match?
-4. Is the target type `partial` (and `public`, for `[Autowire]`)?
-5. For `BindNodes()`: does the class name equal the scene's file name, ignoring case?
-
-The `package:smoke` job in [.gitlab-ci.yml](.gitlab-ci.yml) asserts exactly these failure modes against a
-throwaway consumer project on every pipeline.
-
-### How can I determine which syntax nodes I should expect?
-
-Consider installing the Roslyn syntax tree viewer plugin [Rossynt](https://plugins.jetbrains.com/plugin/16902-rossynt/).
-
-### How to learn more about wiring source generators?
-
-Watch the walkthrough
-video: [Let's Build an Incremental Source Generator With Roslyn, by Stefan Pölz](https://youtu.be/azJm_Y2nbAI)
-The complete set of information is available
-in [Source Generators Cookbook](https://github.com/dotnet/roslyn/blob/main/docs/features/source-generators.cookbook.md).
+Pushing a `vX.Y.Z` tag builds, tests and publishes that version to GitHub Packages and creates a GitHub
+Release for it.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/kanimaru/lazy-o-godot/blob/master/LICENSE).
