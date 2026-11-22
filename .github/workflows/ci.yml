@@ -1,6 +1,6 @@
 # lazy-o-godot CI on GitHub — the GitHub Packages counterpart of .gitlab-ci.yml
 #
-#   build    every push and PR     does the generator compile
+#   build    every push and PR     does the generator compile, do its tests pass
 #   smoke    every push and PR     pack it, then make a throwaway Godot consumer
 #                                  project load the generators and use their output
 #   publish  vX.Y.Z tags only      push the .nupkg to GitHub Packages and create a
@@ -39,6 +39,8 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
       - run: dotnet build dev.kani.godot.generator.csproj -c Release
+      - name: Unit tests
+        run: dotnet test tests/Generators.Tests/Generators.Tests.csproj -c Release
       # Surfaces warnings without failing the run, like build:warnings on GitLab.
       - name: Build with warnings as errors (non-blocking)
         continue-on-error: true

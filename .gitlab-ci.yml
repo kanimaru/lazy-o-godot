@@ -91,6 +91,15 @@ build:warnings:
   script:
     - dotnet build dev.kani.godot.generator.csproj -c Release -warnaserror
 
+# The generators' unit tests: each drives a generator through Roslyn's
+# CSharpGeneratorDriver over stub Godot types and checks what it emits. In the
+# test stage, so a failing test keeps auto-tag from cutting a release.
+test:
+  extends: .dotnet
+  stage: test
+  script:
+    - dotnet test tests/Generators.Tests/Generators.Tests.csproj -c Release
+
 # ---------------------------------------------------------------------------
 # package:smoke — pack it, then make a real consumer prove the generators run
 # ---------------------------------------------------------------------------
