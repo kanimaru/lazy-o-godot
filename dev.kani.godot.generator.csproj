@@ -38,6 +38,9 @@
         <None Remove="smoke/**" />
         <Compile Remove="pkg/**" />
         <None Remove="pkg/**" />
+        <!-- The generator's unit tests: a project of their own, built against this one. -->
+        <Compile Remove="tests/**" />
+        <None Remove="tests/**" />
     </ItemGroup>
 
     <!-- ===================================================================

@@ -6,3 +6,4 @@
 Rule ID | Category | Severity | Notes
 --------|----------|----------|-------
 LZ0001 | Threading | Warning | RxSchedulerAnalyzer, time-based Rx operator without a scheduler
+LZ0002 | Generator | Warning | BindGenerator, unique instanced node whose type cannot be resolved

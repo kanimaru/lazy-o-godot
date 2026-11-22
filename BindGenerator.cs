@@ -13,6 +13,20 @@ namespace GenUtilities;
 
 [Generator]
 public class BindGenerator : IIncrementalGenerator {
+    /// <summary>
+    /// A <c>%Unique</c> instanced node whose type the generator cannot find, so it gets no field.
+    /// </summary>
+    private static readonly DiagnosticDescriptor UnresolvedInstanceType = new(
+        "LZ0002",
+        "Unique instanced node is not bound",
+        "BindNodes() does not bind '%{0}' in {1}: the root type of {2} could not be resolved",
+        "Generator",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "Neither the instance, the scene it instances, nor any scene down its "
+            + "instance chain carries a C# script or a Godot type the generator can find. "
+            + "Make the scene an AdditionalFiles item, or look the node up by hand.");
+
     public void Initialize(IncrementalGeneratorInitializationContext context) {
         IncrementalValuesProvider<INamedTypeSymbol> classProvider = context.SyntaxProvider
             .CreateSyntaxProvider(
@@ -168,8 +182,21 @@ public class BindGenerator : IIncrementalGenerator {
                         // that scene's root (owner) node: prefer the C# class attached via its
                         // script, otherwise fall back to the Godot type, e.g. "Control".
                         nodeType = ResolveInstancedSceneRootType(context, compilation, sceneFiles, scenePath,
-                            allTypes, classDefinition);
+                            allTypes, classDefinition, []);
                     }
+                }
+
+                if (nodeType == null) {
+                    string instanced =
+                        sceneResources.TryGetValue(instanceId, out string? unresolvedPath)
+                            ? "res://" + unresolvedPath
+                            : $"ExtResource(\"{instanceId}\")";
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        UnresolvedInstanceType,
+                        classSymbol.Locations.FirstOrDefault(),
+                        nodeName,
+                        Path.GetFileName(sceneFile.Path),
+                        instanced));
                 }
             } else // It's a regular node
             {
@@ -216,10 +243,20 @@ public class BindGenerator : IIncrementalGenerator {
         }
     }
 
+    /// <summary>
+    /// The C# type of the root of the scene at <paramref name="scenePath"/>: its script's class,
+    /// else, for a variant scene whose root instances another scene, that scene's root type, else
+    /// its Godot class; <c>null</c> when none of these can be found.
+    /// </summary>
     private static string? ResolveInstancedSceneRootType(SourceProductionContext context, Compilation compilation,
         ImmutableArray<AdditionalText> sceneFiles, string scenePath,
-        ILookup<string, INamedTypeSymbol> allTypes, ClassDefinition classDefinition) {
+        ILookup<string, INamedTypeSymbol> allTypes, ClassDefinition classDefinition,
+        HashSet<string> visited) {
         string normalized = scenePath.Replace('\\', '/');
+        if (!visited.Add(normalized.ToLowerInvariant())) {
+            return null;
+        }
+
         AdditionalText? target = sceneFiles.FirstOrDefault(f =>
             f.Path.Replace('\\', '/').EndsWith(normalized, StringComparison.OrdinalIgnoreCase));
         string? content = target?.GetText(context.CancellationToken)?.ToString();
@@ -227,9 +264,10 @@ public class BindGenerator : IIncrementalGenerator {
             return null;
         }
 
-        // Collect the script ext_resources declared by the instanced scene so we can
-        // map a script id referenced by the root node back to its C# class.
+        // Collect the script and scene ext_resources declared by the instanced scene so we can
+        // map an id referenced by the root node back to its C# class or the scene it instances.
         var scriptResources = new Dictionary<string, string>();
+        var sceneResources = new Dictionary<string, string>();
         var extResourceRegex =
             new Regex(
                 """^\[ext_resource type="([^"]+)"(?: uid="[^"]+")? path="res:\/\/([^"]+)" id="([^"]+)"\]""",
@@ -237,6 +275,9 @@ public class BindGenerator : IIncrementalGenerator {
         foreach (Match match in extResourceRegex.Matches(content!)) {
             if (match.Groups[1].Value == "Script" && match.Groups[2].Value.EndsWith(".cs")) {
                 scriptResources[match.Groups[3].Value] = match.Groups[2].Value;
+            } else if (match.Groups[1].Value == "PackedScene"
+                && match.Groups[2].Value.EndsWith(".tscn")) {
+                sceneResources[match.Groups[3].Value] = match.Groups[2].Value;
             }
         }
 
@@ -280,6 +321,25 @@ public class BindGenerator : IIncrementalGenerator {
 
                 return typeSymbol.ToDisplayString();
             }
+        }
+
+        // A variant scene's root is itself an instance: follow the chain to a scene with a type.
+        Match instanceMatch = Regex.Match(block, @"instance\s*=\s*ExtResource\(""([^""]+)""\)");
+        if (instanceMatch.Success &&
+            sceneResources.TryGetValue(instanceMatch.Groups[1].Value, out string? baseScenePath)) {
+            INamedTypeSymbol? baseSymbol =
+                allTypes[Path.GetFileNameWithoutExtension(baseScenePath)].FirstOrDefault();
+            if (baseSymbol != null) {
+                if (!baseSymbol.ContainingNamespace.IsGlobalNamespace) {
+                    classDefinition.UsingNamespaceName.Add(
+                        baseSymbol.ContainingNamespace.ToDisplayString());
+                }
+
+                return baseSymbol.ToDisplayString();
+            }
+
+            return ResolveInstancedSceneRootType(context, compilation, sceneFiles, baseScenePath,
+                allTypes, classDefinition, visited);
         }
 
         // Otherwise fall back to the Godot type of the root node, e.g. "Control".
