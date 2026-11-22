@@ -112,7 +112,8 @@ public class BindGeneratorTests {
         Assert.Contains("private Button _drop;", result.Binder);
         Diagnostic warning = Assert.Single(result.GeneratorDiagnostics);
         Assert.Equal("LZ0002", warning.Id);
-        Assert.Contains("Joystick", warning.GetMessage());
+        Assert.Contains("'%Joystick' in ClawGame.tscn", warning.GetMessage());
+        Assert.Contains("res://client/missing.tscn", warning.GetMessage());
     }
 
     private static string ClawScene(string joystickPath) {

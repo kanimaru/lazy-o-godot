@@ -91,6 +91,7 @@ public class BindGenerator : IIncrementalGenerator {
             return;
         }
 
+        var resourcePaths = new Dictionary<string, string>();
         var scriptResources = new Dictionary<string, string>();
         var sceneResources = new Dictionary<string, string>();
         var extResourceRegex =
@@ -103,6 +104,7 @@ public class BindGenerator : IIncrementalGenerator {
             string path = match.Groups[2].Value;
             string id = match.Groups[3].Value;
 
+            resourcePaths[id] = path;
             if (type == "Script" && path.EndsWith(".cs")) {
                 scriptResources[id] = path;
             } else if (type == "PackedScene" && path.EndsWith(".tscn")) {
@@ -188,7 +190,7 @@ public class BindGenerator : IIncrementalGenerator {
 
                 if (nodeType == null) {
                     string instanced =
-                        sceneResources.TryGetValue(instanceId, out string? unresolvedPath)
+                        resourcePaths.TryGetValue(instanceId, out string? unresolvedPath)
                             ? "res://" + unresolvedPath
                             : $"ExtResource(\"{instanceId}\")";
                     context.ReportDiagnostic(Diagnostic.Create(
